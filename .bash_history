@@ -1,2000 +1,2000 @@
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.1.1/24 dev eth1  # to server1
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.2.1/24 dev eth2  # to server2
-sudo docker exec clab-anycast-network-router1 ip addr add 192.168.1.1/24 dev eth3  # to client1
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.10.1/24 dev eth4  # to router2
-
-# Configure Router2 interfaces
-echo "--- Configuring Router2 ---"
-sudo docker exec clab-anycast-network-router2 ip addr add 10.0.3.1/24 dev eth1  # to server3
-sudo docker exec clab-anycast-network-router2 ip addr add 192.168.2.1/24 dev eth2  # to client2
-sudo docker exec clab-anycast-network-router2 ip addr add 10.0.10.2/24 dev eth3  # to router1
-
-# Configure Anycast Servers
-echo "--- Configuring Anycast Servers ---"
-sudo docker exec clab-anycast-network-anycast-server1 ip addr add 10.0.1.10/24 dev eth1
-sudo docker exec clab-anycast-network-anycast-server2 ip addr add 10.0.2.10/24 dev eth1
-sudo docker exec clab-anycast-network-anycast-server3 ip addr add 10.0.3.10/24 dev eth1
-
-# Configure Clients
-echo "--- Configuring Clients ---"
-sudo docker exec clab-anycast-network-client1 ip addr add 192.168.1.100/24 dev eth1
-sudo docker exec clab-anycast-network-client2 ip addr add 192.168.2.100/24 dev eth1
-
-echo "--- IPv4 Configuration Complete ---"
+sudo docker exec clab-anycast-network-client1 ping -c 2 -W 1 192.168.1.1
 EOF
 
-chmod +x configure-ipv4-addresses.sh
-./configure-ipv4-addresses.sh
-cat > setup-anycast-routing.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Setting Up Anycast Routing ==="
-
-# Remove any existing anycast IPs
-for server in 1 2 3; do
-    sudo docker exec clab-anycast-network-anycast-server$server ip addr del $ANYCAST_IP/32 dev eth1 2>/dev/null || true
-    sudo docker exec clab-anycast-network-anycast-server$server ip addr del $ANYCAST_IP/32 dev lo 2>/dev/null || true
-done
-
-# Add anycast IP to all servers
-echo "--- Adding Anycast IP to Servers ---"
-for server in 1 2 3; do
-    sudo docker exec clab-anycast-network-anycast-server$server ip addr add $ANYCAST_IP/32 dev lo
-    echo "Anycast IP $ANYCAST_100 added to anycast-server$server loopback"
-done
-
-# Configure routing on routers
-echo "--- Configuring Router Routes ---"
-
-# Enable IP forwarding
-sudo docker exec clab-anycast-network-router1 bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-sudo docker exec clab-anycast-network-router2 bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-
-# Clear any existing routes to anycast IP
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-
-# Add routes to anycast IP via servers
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-
-# Configure client routing
-echo "--- Configuring Client Routes ---"
-
-# Client1 routes anycast traffic via Router1
-sudo docker exec clab-anycast-network-client1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-client1 ip route add $ANYCAST_IP/32 via 192.168.1.1 dev eth1
-
-# Client2 routes anycast traffic via Router2
-sudo docker exec clab-anycast-network-client2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-client2 ip route add $ANYCAST_IP/32 via 192.168.2.1 dev eth1
-
-# Add default routes for clients
-sudo docker exec clab-anycast-network-client1 ip route add default via 192.168.1.1 dev eth1
-sudo docker exec clab-anycast-network-client2 ip route add default via 192.168.2.1 dev eth1
-
-# Configure inter-router routing for anycast
-sudo docker exec clab-anycast-network-router1 ip route add 192.168.2.0/24 via 10.0.10.2 dev eth4
-sudo docker exec clab-anycast-network-router2 ip route add 192.168.1.0/24 via 10.0.10.1 dev eth3
-
-echo "--- Anycast Routing Configuration Complete ---"
-EOF
-
-chmod +x setup-anycast-routing.sh
-./setup-anycast-routing.sh
+chmod +x simple-working-setup.sh
 clear
-echo "=== Verifying Network Configuration ==="
-# Check all interfaces have IPv4 addresses
-for container in router1 router2 client1 client2 anycast-server1 anycast-server2 anycast-server3; do     echo "--- $container IPv4 Addresses ---";     sudo docker exec clab-anycast-network-$container ip -4 addr show;     echo; done
-# Check routing tables
-for container in router1 router2 client1 client2; do     echo "--- $container Routing Table ---";     sudo docker exec clab-anycast-network-$container ip route show;     echo; done
+# Run the simple setup
+./simple-working-setup.sh
 clear
-cat > restart-anycast-servers.sh << 'EOF'
-#!/bin/bash
-
-echo "=== Restarting Anycast HTTP Servers ==="
-
-# Kill any existing servers
-for server in 1 2 3; do
-    sudo docker exec clab-anycast-network-anycast-server$server pkill -f "python3" || true
-done
-
-# Start HTTP servers on all anycast servers
-for server in 1 2 3; do
-    echo "Starting server on anycast-server$server"
-    sudo docker exec -d clab-anycast-network-anycast-server$server bash -c 'cat > /tmp/anycast-server.py << "PYEOF"
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-import time
-
-class AnycastHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        hostname = socket.gethostname()
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        response = f"Anycast Response from {hostname} (Server {socket.gethostname()[-1]})\n"
-        self.wfile.write(response.encode())
-        print(f"Request served by {hostname}")
-    
-    def log_message(self, format, *args):
-        print(f"{socket.gethostname()}: {format % args}")
-
-print(f"Starting anycast server on {socket.gethostname()}...")
-server = HTTPServer(("0.0.0.0", 8080), AnycastHandler)
-server.serve_forever()
-PYEOF'
-    
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-    sleep 1
-done
-
-echo "All anycast servers started"
-EOF
-
-chmod +x restart-anycast-servers.sh
-./restart-anycast-servers.sh
-clea
+# Run the simple setup
+./simple-working-setup.sh
 clear
-echo "=== Testing Anycast Connectivity ==="
-# Test from routers to anycast IP first
-echo "--- Testing from Routers ---"
-for router in 1 2; do     echo "Router$router to anycast IP:";     sudo docker exec clab-anycast-network-router$router ping -c 2 -W 1 10.0.0.100;     sudo docker exec clab-anycast-network-router$router curl -s --connect-timeout 2 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
-# Test from clients
-echo "--- Testing from Clients ---"
-for client in 1 2; do     echo "Client$client to anycast IP:";     sudo docker exec clab-anycast-network-client$client ping -c 3 -W 1 10.0.0.100;     sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 3 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
+# Run the simple setup
+./simple-working-setup.sh
 clear
-echo "=== Testing Anycast Connectivity ==="
-# Test from routers to anycast IP first
-echo "--- Testing from Routers ---"
-for router in 1 2; do     echo "Router$router to anycast IP:";     sudo docker exec clab-anycast-network-router$router ping -c 2 -W 1 10.0.0.100;     sudo docker exec clab-anycast-network-router$router curl -s --connect-timeout 2 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
-# Test from clients
-echo "--- Testing from Clients ---"
-for client in 1 2; do     echo "Client$client to anycast IP:";     sudo docker exec clab-anycast-network-client$client ping -c 3 -W 1 10.0.0.100;     sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 3 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
+echo "=== INSTALLING PACKAGES IN ALL CONTAINERS ==="
+for container in router1 router2 client1 client2 anycast-server1 anycast-server2 anycast-server3; do     echo "--- Installing in $container ---";     sudo docker exec clab-anycast-network-$container apt-get update;     sudo docker exec clab-anycast-network-$container apt-get install -y iproute2 net-tools iputils-ping curl python3;     echo "✅ $container ready"; done
 clear
-ls
-clear
-cat > fix-client-connectivity.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Fixing Client Connectivity ==="
-
-# First, ensure clients have proper default routes
-echo "--- Configuring Client Default Routes ---"
-
-# Client1 configuration
-sudo docker exec clab-anycast-network-client1 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-client1 ip route add default via 192.168.1.1 dev eth1
-
-# Client2 configuration
-sudo docker exec clab-anycast-network-client2 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-client2 ip route add default via 192.168.2.1 dev eth1
-
-# Ensure routers have proper routes back to clients
-echo "--- Configuring Router Return Routes ---"
-
-# Router1 needs route to Client2 network via Router2
-sudo docker exec clab-anycast-network-router1 ip route del 192.168.2.0/24 2>/dev/null || true
-sudo docker exec clab-anycast-network-router1 ip route add 192.168.2.0/24 via 10.0.10.2 dev eth4
-
-# Router2 needs route to Client1 network via Router1
-sudo docker exec clab-anycast-network-router2 ip route del 192.168.1.0/24 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route add 192.168.1.0/24 via 10.0.10.1 dev eth3
-
-# Enable proxy ARP on routers to help with anycast routing
-echo "--- Enabling Proxy ARP ---"
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/conf/all/proxy_arp"
-done
-
-# Add specific anycast routes on clients (remove and re-add)
-echo "--- Refreshing Anycast Routes ---"
-for client in 1 2; do
-    sudo docker exec clab-anycast-network-client$client ip route del $ANYCAST_IP/32 2>/dev/null || true
-    if [ "$client" = "1" ]; then
-        sudo docker exec clab-anycast-network-client1 ip route add $ANYCAST_IP/32 via 192.168.1.1 dev eth1
-    else
-        sudo docker exec clab-anycast-network-client2 ip route add $ANYCAST_IP/32 via 192.168.2.1 dev eth1
-    fi
-done
-
-echo "--- Client Connectivity Fix Complete ---"
-EOF
-
-chmod +x fix-client-connectivity.sh
-./fix-client-connectivity.sh
-clear
-echo "=== Step-by-Step Connectivity Test ==="
-# Test 1: Client to gateway
-echo "1. Testing client to gateway connectivity:"
-for client in 1 2; do     if [ "$client" = "1" ]; then         GATEWAY="192.168.1.1";     else         GATEWAY="192.168.2.1";     fi;     echo "Client$client to gateway $GATEWAY:";     sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 $GATEWAY; done
-# Test 2: Trace route to anycast IP
-echo -e "\n2. Tracing route to anycast IP:"
-for client in 1 2; do     echo "Client$client route to anycast:";     sudo docker exec clab-anycast-network-client$client ip route get 10.0.0.100; done
-# Test 3: Test anycast connectivity
-echo -e "\n3. Testing anycast connectivity:"
-for client in 1 2; do     echo "Client$client to anycast IP:";     sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 10.0.0.100;     sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
-clear
-echo "=== Checking for Firewall/NAT Issues ==="
-# Check if there are any iptables rules blocking traffic
-for router in 1 2; do     echo "--- Router$router iptables ---";     sudo docker exec clab-anycast-network-router$router iptables -L -n -v || echo "iptables not available";     echo; done
-# Flush any potentially problematic iptables rules
-for router in 1 2; do     echo "Flushing iptables on Router$router:";     sudo docker exec clab-anycast-network-router$router iptables -F 2>/dev/null || true;     sudo docker exec clab-anycast-network-router$router iptables -t nat -F 2>/dev/null || true; done
-lear
-clear
-echo "=== Checking for Firewall/NAT Issues ==="
-# Check if there are any iptables rules blocking traffic
-for router in 1 2; do     echo "--- Router$router iptables ---";     sudo docker exec clab-anycast-network-router$router iptables -L -n -v || echo "iptables not available";     echo; done
-# Flush any potentially problematic iptables rules
-for router in 1 2; do     echo "Flushing iptables on Router$router:";     sudo docker exec clab-anycast-network-router$router iptables -F 2>/dev/null || true;     sudo docker exec clab-anycast-network-router$router iptables -t nat -F 2>/dev/null || true; done
-sudo docker ps
-clear
-docker ps
-sudo docker ps
-clear
-echo "=== Testing Connectivity Between All Nodes ==="
-# Test client to router connectivity
-echo "1. Client to Router connectivity:"
-for client in 1 2; do     if [ "$client" = "1" ]; then         ROUTER_IP="192.168.1.1";     else         ROUTER_IP="192.168.2.1";     fi;     echo "Client$client to Router:";     sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 $ROUTER_IP; done
-# Test router to server connectivity
-echo -e "\n2. Router to Server connectivity:"
-echo "Router1 to Server1 (10.0.1.10):"
-sudo docker exec clab-anycast-network-router1 ping -c 2 -W 1 10.0.1.10
-echo "Router1 to Server2 (10.0.2.10):"
-sudo docker exec clab-anycast-network-router1 ping -c 2 -W 1 10.0.2.10
-echo "Router2 to Server3 (10.0.3.10):"
-sudo docker exec clab-anycast-network-router2 ping -c 2 -W 1 10.0.3.10
-# Test inter-router connectivity
-echo -e "\n3. Inter-Router connectivity:"
-echo "Router1 to Router2 (10.0.10.2):"
-sudo docker exec clab-anycast-network-router1 ping -c 2 -W 1 10.0.10.2
-echo "Router2 to Router1 (10.0.10.1):"
-sudo docker exec clab-anycast-network-router2 ping -c 2 -W 1 10.0.10.1
-clear
-cat > comprehensive-routing-fix.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Comprehensive Routing Fix ==="
-
-# First, let's verify the current state
-echo "--- Current State Verification ---"
-for client in 1 2; do
-    echo "Client$client default route:"
-    sudo docker exec clab-anycast-network-client$client ip route show | grep default || echo "No default route"
-done
-
-# Fix 1: Ensure proper default routes on clients
-echo "--- Fixing Client Default Routes ---"
-sudo docker exec clab-anycast-network-client1 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-client1 ip route add default via 192.168.1.1 dev eth1
-
-sudo docker exec clab-anycast-network-client2 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-client2 ip route add default via 192.168.2.1 dev eth1
-
-# Fix 2: Ensure routers have routes to client networks
-echo "--- Fixing Router Routes to Client Networks ---"
-
-# Router1 should know about Client2 network via Router2
-sudo docker exec clab-anycast-network-router1 ip route del 192.168.2.0/24 2>/dev/null || true
-sudo docker exec clab-anycast-network-router1 ip route add 192.168.2.0/24 via 10.0.10.2 dev eth4
-
-# Router2 should know about Client1 network via Router1
-sudo docker exec clab-anycast-network-router2 ip route del 192.168.1.0/24 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route add 192.168.1.0/24 via 10.0.10.1 dev eth3
-
-# Fix 3: Ensure anycast routes are correct on routers
-echo "--- Verifying Anycast Routes on Routers ---"
-
-# Clear and re-add anycast routes
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-
-# Fix 4: Enable proxy ARP and IP forwarding
-echo "--- Enabling Network Features ---"
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/conf/all/proxy_arp"
-done
-
-# Fix 5: Add specific anycast routes to clients
-echo "--- Adding Anycast Routes to Clients ---"
-for client in 1 2; do
-    sudo docker exec clab-anycast-network-client$client ip route del $ANYCAST_IP/32 2>/dev/null || true
-    if [ "$client" = "1" ]; then
-        sudo docker exec clab-anycast-network-client1 ip route add $ANYCAST_IP/32 via 192.168.1.1 dev eth1
-    else
-        sudo docker exec clab-anycast-network-client2 ip route add $ANYCAST_IP/32 via 192.168.2.1 dev eth1
-    fi
-done
-
-echo "--- Routing Fix Complete ---"
-EOF
-
-chmod +x comprehensive-routing-fix.sh
-./comprehensive-routing-fix.sh
-clear
-echo "=== Testing Packet Flow ==="
-# Install traceroute if not available
-for client in 1 2; do     echo "Installing traceroute on client$client...";     sudo docker exec clab-anycast-network-client$client apt-get update > /dev/null 2>&1;     sudo docker exec clab-anycast-network-client$client apt-get install -y traceroute > /dev/null 2>&1 || echo "Traceroute install failed, continuing..."; done
-echo "=== Final Connectivity Test ==="
-# Test basic connectivity first
-for client in 1 2; do     echo "--- Client$client Basic Tests ---";     if [ "$client" = "1" ]; then         GATEWAY="192.168.1.1";     else         GATEWAY="192.168.2.1";     fi         echo "Ping to gateway $GATEWAY:";     sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 $GATEWAY         echo "Ping to anycast IP 10.0.0.100:";     sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 10.0.0.100         echo "HTTP request to anycast:";     sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 3 http://10.0.0.100:8080 || echo "HTTP failed";     echo; done
-clear
-echo "=== Comprehensive Packet Debugging ==="
-# Start packet capture on multiple points simultaneously
-echo "Starting packet capture on all critical points..."
-# Capture on Router1 client interface
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth3 -n 'host 10.0.0.100 or host 192.168.1.100' -w /tmp/router1_eth3.pcap 2>/dev/null"
-# Capture on Router1 server interfaces
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth1 -n 'host 10.0.0.100' -w /tmp/router1_eth1.pcap 2>/dev/null"
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth2 -n 'host 10.0.0.100' -w /tmp/router1_eth2.pcap 2>/dev/null"
-# Capture on the servers
-sudo docker exec -d clab-anycast-network-anycast-server1 bash -c "tcpdump -i any -n 'host 10.0.0.100' -w /tmp/server1.pcap 2>/dev/null"
-# Make test requests from clients
-echo "Making test requests from clients..."
-sudo docker exec clab-anycast-network-client1 ping -c 3 10.0.0.100 &
-sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 3 http://10.0.0.100:8080 &
-sleep 5
-# Stop all tcpdump processes
-for container in router1 anycast-server1; do     sudo docker exec clab-anycast-network-$container pkill tcpdump 2>/dev/null || true; done
-# Analyze the captures
-echo "=== Packet Capture Analysis ==="
-echo "Router1 eth3 (client side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth3.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Router1 eth1 (server1 side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth1.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Server1 packets:"
-sudo docker exec clab-anycast-network-anycast-server1 tcpdump -n -r /tmp/server1.pcap 2>/dev/null | head -20 || echo "No packets captured"
-clear
-echo "=== Comprehensive Packet Debugging ==="
-# Start packet capture on multiple points simultaneously
-echo "Starting packet capture on all critical points..."
-# Capture on Router1 client interface
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth3 -n 'host 10.0.0.100 or host 192.168.1.100' -w /tmp/router1_eth3.pcap 2>/dev/null"
-# Capture on Router1 server interfaces
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth1 -n 'host 10.0.0.100' -w /tmp/router1_eth1.pcap 2>/dev/null"
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth2 -n 'host 10.0.0.100' -w /tmp/router1_eth2.pcap 2>/dev/null"
-# Capture on the servers
-sudo docker exec -d clab-anycast-network-anycast-server1 bash -c "tcpdump -i any -n 'host 10.0.0.100' -w /tmp/server1.pcap 2>/dev/null"
-# Make test requests from clients
-echo "Making test requests from clients..."
-sudo docker exec clab-anycast-network-client1 ping -c 3 10.0.0.100 &
-sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 3 http://10.0.0.100:8080 &
-sleep 5
-# Stop all tcpdump processes
-for container in router1 anycast-server1; do     sudo docker exec clab-anycast-network-$container pkill tcpdump 2>/dev/null || true; done
-# Analyze the captures
-echo "=== Packet Capture Analysis ==="
-echo "Router1 eth3 (client side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth3.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Router1 eth1 (server1 side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth1.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Server1 packets:"
-sudo docker exec clab-anycast-network-anycast-server1 tcpdump -n -r /tmp/server1.pcap 2>/dev/null | head -20 || echo "No packets capturedclear
-clear
-echo "=== Comprehensive Packet Debugging ==="
-# Start packet capture on multiple points simultaneously
-echo "Starting packet capture on all critical points..."
-# Capture on Router1 client interface
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth3 -n 'host 10.0.0.100 or host 192.168.1.100' -w /tmp/router1_eth3.pcap 2>/dev/null"
-# Capture on Router1 server interfaces
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth1 -n 'host 10.0.0.100' -w /tmp/router1_eth1.pcap 2>/dev/null"
-sudo docker exec -d clab-anycast-network-router1 bash -c "tcpdump -i eth2 -n 'host 10.0.0.100' -w /tmp/router1_eth2.pcap 2>/dev/null"
-# Capture on the servers
-sudo docker exec -d clab-anycast-network-anycast-server1 bash -c "tcpdump -i any -n 'host 10.0.0.100' -w /tmp/server1.pcap 2>/dev/null"
-# Make test requests from clients
-echo "Making test requests from clients..."
-sudo docker exec clab-anycast-network-client1 ping -c 3 10.0.0.100 &
-sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 3 http://10.0.0.100:8080 &
-sleep 5
-# Stop all tcpdump processes
-for container in router1 anycast-server1; do     sudo docker exec clab-anycast-network-$container pkill tcpdump 2>/dev/null || true; done
-# Analyze the captures
-echo "=== Packet Capture Analysis ==="
-echo "Router1 eth3 (client side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth3.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Router1 eth1 (server1 side) packets:"
-sudo docker exec clab-anycast-network-router1 tcpdump -n -r /tmp/router1_eth1.pcap 2>/dev/null | head -20 || echo "No packets captured"
-echo "Server1 packets:"
-sudo docker exec clab-anycast-network-anycast-server1 tcpdump -n -r /tmp/server1.pcap 2>/dev/null | head -20 || echo "No packets captured"
-clear
-cat > fix-return-path.sh << 'EOF'
-#!/bin/bash
-
-echo "=== Fixing Return Path Routing ==="
-
-# The problem: Servers are sending responses directly back to clients via their default route
-# But they need to send responses back through the routers
-
-# Configure servers to use routers as default gateway
-echo "--- Configuring Server Default Routes ---"
-
-# Server1 should use Router1 as gateway
-sudo docker exec clab-anycast-network-anycast-server1 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-anycast-server1 ip route add default via 10.0.1.1 dev eth1
-
-# Server2 should use Router1 as gateway  
-sudo docker exec clab-anycast-network-anycast-server2 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-anycast-server2 ip route add default via 10.0.2.1 dev eth1
-
-# Server3 should use Router2 as gateway
-sudo docker exec clab-anycast-network-anycast-server3 ip route del default 2>/dev/null || true
-sudo docker exec clab-anycast-network-anycast-server3 ip route add default via 10.0.3.1 dev eth1
-
-# Add specific routes for client networks on servers
-echo "--- Adding Client Network Routes to Servers ---"
-
-# Server1 and Server2 need route to Client2 network via Router1
-for server in 1 2; do
-    sudo docker exec clab-anycast-network-anycast-server$server ip route add 192.168.2.0/24 via 10.0.${server}.1 dev eth1
-done
-
-# Server3 needs route to Client1 network via Router2
-sudo docker exec clab-anycast-network-anycast-server3 ip route add 192.168.1.0/24 via 10.0.3.1 dev eth1
-
-# Ensure routers know how to route between their own networks
-echo "--- Configuring Router Internal Routing ---"
-
-# Router1 needs to route between its own networks
-sudo docker exec clab-anycast-network-router1 ip route add 192.168.1.0/24 dev eth3
-sudo docker exec clab-anycast-network-router1 ip route add 192.168.2.0/24 via 10.0.10.2 dev eth4
-
-# Router2 needs to route between its own networks
-sudo docker exec clab-anycast-network-router2 ip route add 192.168.2.0/24 dev eth2
-sudo docker exec clab-anycast-network-router2 ip route add 192.168.1.0/24 via 10.0.10.1 dev eth3
-
-echo "--- Return Path Routing Fixed ---"
-EOF
-
-chmod +x fix-return-path.sh
-./fix-return-path.sh
-clear
-echo "=== Testing Fixed Routing ==="
-# Test from Client1
-echo "--- Client1 Tests ---"
-sudo docker exec clab-anycast-network-client1 ping -c 3 -W 1 10.0.0.100
-sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 3 http://10.0.0.100:8080 || echo "HTTP failed"
-# Test from Client2
-echo -e "\n--- Client2 Tests ---"
-sudo docker exec clab-anycast-network-client2 ping -c 3 -W 1 10.0.0.100
-sudo docker exec clab-anycast-network-client2 curl -s --connect-timeout 3 http://10.0.0.100:8080 || echo "HTTP failed"
-clear
-echo "=== Testing Anycast Flip Functionality ==="
-# Test multiple requests to see which servers respond
-echo "Multiple requests from Client1:"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | head -1);     if [ -n "$response" ]; then         echo "  Request $i: $response";     else         echo "  Request $i: FAILED";     fi; done
-echo -e "\nMultiple requests from Client2:"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client2 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | head -1);     if [ -n "$response" ]; then         echo "  Request $i: $response";     else         echo "  Request $i: FAILED";     fi; done
-clear
-echo "=== Testing Anycast Flip Functionality ==="
-# Test multiple requests to see which servers respond
-echo "Multiple requests from Client1:"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | head -1);     if [ -n "$response" ]; then         echo "  Request $i: $response";     else         echo "  Request $i: FAILED";     fi; done
-echo -e "\nMultiple requests from Client2:"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client2 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | head -1);     if [ -n "$response" ]; then         echo "  Request $i: $response";     else         echo "  Request $i: FAILED";     fi; done
-clear
-cat > anycast-flip-simulation.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Anycast Flip Simulation ==="
-
-test_anycast() {
-    echo "Current anycast responses:"
-    for client in 1 2; do
-        echo "Client$client:"
-        responses=""
-        for i in {1..3}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 2>/dev/null | grep -o "Server [0-9]" | head -1)
-            if [ -n "$response" ]; then
-                echo "  Request $i: $response"
-                responses+="$response "
-            else
-                echo "  Request $i: FAILED"
-            fi
-        done
-        # Show which servers responded
-        unique_servers=$(echo "$responses" | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
-        if [ -n "$unique_servers" ]; then
-            echo "  Servers reached: $unique_servers"
-        fi
-        echo
-    done
-}
-
-# Initial state
-echo "=== INITIAL STATE ==="
-test_anycast
-
-echo "=== SIMULATION 1: Stop Server1 ==="
-echo "Stopping anycast-server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 3
-test_anycast
-
-echo "=== SIMULATION 2: Stop Server3 ==="
-echo "Stopping anycast-server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 3
-test_anycast
-
-echo "=== SIMULATION 3: Restore All Servers ==="
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-done
-sleep 3
-test_anycast
-
-echo "=== Anycast Flip Simulation Complete ==="
-EOF
-
-chmod +x anycast-flip-simulation.sh
-clear
-# Run the simulation
-./anycast-flip-simulation.sh
-clear
-cat > improve-anycast-failover.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Improving Anycast Failover ==="
-
-# The issue: Router1 has ECMP but it's not working properly for failover
-# Let's fix the routing to enable proper anycast failover
-
-echo "--- Configuring Better Anycast Routing ---"
-
-# Clear existing anycast routes
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-
-# Configure Router1 with proper ECMP for anycast
-echo "Configuring Router1 ECMP routing..."
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 nexthop via 10.0.1.10 dev eth1 weight 1 nexthop via 10.0.2.10 dev eth2 weight 1
-
-# Configure Router2 with route to anycast
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-
-# Add backup routes between routers for anycast failover
-echo "Adding inter-router anycast backup routes..."
-
-# Router1 should know about Server3 via Router2 as backup
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 100
-
-# Router2 should know about Server1 and Server2 via Router1 as backup
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 100
-
-# Configure route preferences (metrics) for better failover
-echo "Configuring route metrics..."
-
-# Make direct routes preferred over backup routes
-sudo docker exec clab-anycast-network-router1 ip route change $ANYCAST_IP/32 nexthop via 10.0.1.10 dev eth1 weight 1 nexthop via 10.0.2.10 dev eth2 weight 1
-
-# Enable BFD-like fast failure detection (using lower metrics for direct routes)
-for router in 1 2; do
-    # Enable TCP keepalives and lower TCP timeouts
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 10 > /proc/sys/net/ipv4/tcp_keepalive_time"
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 5 > /proc/sys/net/ipv4/tcp_keepalive_intvl"
-done
-
-echo "--- Anycast Failover Configuration Complete ---"
-EOF
-
-chmod +x improve-anycast-failover.sh
-./improve-anycast-failover.sh
-clear
-echo "=== Testing Improved Anycast Failover ==="
-# First, verify all servers are running
-echo "Checking server status:"
-for server in 1 2 3; do     status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l);     echo "Server$server: $([ $status -eq 1 ] && echo "RUNNING" || echo "STOPPED")"; done
-# Test initial state
-echo -e "\n=== Initial State ==="
-for client in 1 2; do     echo "Client$client initial requests:";     for i in {1..5}; do         response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);         echo "  Request $i: ${response:-FAILED}";     done; done
-clear
-cat > enhanced-anycast-flip.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Enhanced Anycast Flip Simulation ==="
-
-test_anycast_detailed() {
-    echo "=== Anycast Network Status ==="
-    
-    # Show which servers are running
-    echo "Server Status:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "ACTIVE" || echo "INACTIVE")"
-    done
-    
-    # Test connectivity from both clients
-    echo -e "\nClient Connectivity:"
-    for client in 1 2; do
-        echo "Client$client:"
-        servers_reached=""
-        successful_requests=0
-        
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 2>/dev/null | grep -o "Server [0-9]" | head -1)
-            if [ -n "$response" ]; then
-                echo "  ✓ Request $i: $response"
-                servers_reached+="$response "
-                ((successful_requests++))
-            else
-                echo "  ✗ Request $i: FAILED"
-            fi
-        done
-        
-        # Show summary
-        unique_servers=$(echo "$servers_reached" | tr ' ' '\n' | sort | uniq | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$unique_servers" ]; then
-            echo "  Summary: $successful_requests/5 successful, reached: $unique_servers"
-        else
-            echo "  Summary: 0/5 successful"
-        fi
-        echo
-    done
-}
-
-# Initial state
-echo ">>> PHASE 1: INITIAL STATE (All servers running)"
-test_anycast_detailed
-
-echo ">>> PHASE 2: STOP SERVER1 (Testing failover for Client1)"
-echo "Stopping anycast-server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 5  # Give time for routing to converge
-test_anycast_detailed
-
-echo ">>> PHASE 3: STOP SERVER3 (Testing failover for Client2)"
-echo "Stopping anycast-server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 5
-test_anycast_detailed
-
-echo ">>> PHASE 4: RESTORE ALL SERVERS"
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-done
-sleep 5
-test_anycast_detailed
-
-echo "=== Simulation Complete ==="
-EOF
-
-chmod +x enhanced-anycast-flip.sh
-clear
-# Run the enhanced simulation
-./enhanced-anycast-flip.sh
-clear
-cat > fix-anycast-ecmp.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Fixing Anycast ECMP Routing ==="
-
-# Remove all existing anycast routes
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-
-# Clear route cache
-sudo docker exec clab-anycast-network-router1 ip route flush cache 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route flush cache 2>/dev/null || true
-
-# Configure Router1 with proper ECMP using multipath
-echo "Configuring Router1 ECMP with multipath..."
-# First add individual routes, then the multipath route
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-
-# Now add the multipath route (this should create proper ECMP)
-sudo docker exec clab-anycast-network-router1 ip route change $ANYCAST_IP/32 nexthop via 10.0.1.10 dev eth1 weight 1 nexthop via 10.0.2.10 dev eth2 weight 1
-
-# Configure Router2
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-
-# Add cross-router backup routes with higher metrics (lower priority)
-echo "Adding cross-router backup routes..."
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 100
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 100
-
-# Enable IP forwarding and other necessary kernel settings
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/conf/all/proxy_arp"
-    # Enable route verification
-    sudo docker exec clab-anycast-network-router$router bash -c "echo 1 > /proc/sys/net/ipv4/conf/all/rp_filter"
-done
-
-echo "--- ECMP Routing Configuration Complete ---"
-
-# Verify the configuration
-echo -e "\nVerifying Router1 anycast routes:"
-sudo docker exec clab-anycast-network-router1 ip route show | grep 10.0.0.100
-
-echo -e "\nVerifying Router2 anycast routes:"
-sudo docker exec clab-anycast-network-router2 ip route show | grep 10.0.0.100
-EOF
-
-chmod +x fix-anycast-ecmp.sh
-./fix-anycast-ecmp.sh
-clear
-echo "=== Testing ECMP Load Balancing ==="
-# Test if Router1 is now load balancing between Server1 and Server2
-echo "Testing from Client1 (should see both Server1 and Server2):"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);     echo "  Request $i: ${response:-FAILED}"; done
-echo -e "\nTesting from Client2 (should see Server3):"
-for i in {1..5}; do     response=$(sudo docker exec clab-anycast-network-client2 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);     echo "  Request $i: ${response:-FAILED}"; done
-qclear
-clear
-echo "=== Testing ECMP Load Balancing ==="
-# Test if Router1 is now load balancing between Server1 and Server2
-echo "Testing from Client1 (should see both Server1 and Server2):"
-for i in {1..10}; do     response=$(sudo docker exec clab-anycast-network-client1 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);     echo "  Request $i: ${response:-FAILED}"; done
-echo -e "\nTesting from Client2 (should see Server3):"
-for i in {1..5}; do     response=$(sudo docker exec clab-anycast-network-client2 curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);     echo "  Request $i: ${response:-FAILED}"; done
-clear
-cat > working-anycast-bgp-style.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Implementing Working Anycast with BGP-style Behavior ==="
-
-# Remove all existing anycast routes
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-
-# Clear route cache
-sudo docker exec clab-anycast-network-router1 ip route flush cache 2>/dev/null || true
-
-echo "--- Configuring Router1 with Metric-based Routing ---"
-
-# Add routes with different metrics (lower metric = higher priority)
-# Primary: Server1 (metric 10)
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1 metric 10
-
-# Secondary: Server2 (metric 20) - will be used if Server1 fails
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2 metric 20
-
-# Tertiary: Via Router2 to Server3 (metric 30) - last resort
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 30
-
-echo "--- Configuring Router2 ---"
-# Router2 primary: Server3
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1 metric 10
-
-# Router2 backup: Via Router1 to Server1 or Server2
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 20
-
-echo "--- Setting up Automatic Failover Script ---"
-
-# Create a health check script on routers
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router bash -c 'cat > /tmp/anycast-healthcheck.sh << "SCRIPTEOF"
-#!/bin/bash
-ANYCAST_IP="10.0.0.100"
-
-check_server() {
-    local server_ip=$1
-    local interface=$2
-    local metric=$3
-    
-    # Ping the server
-    if ping -c 1 -W 1 -I $interface $server_ip > /dev/null 2>&1; then
-        # Server is up, ensure route exists with proper metric
-        ip route replace $ANYCAST_IP/32 via $server_ip dev $interface metric $metric
-        return 0
-    else
-        # Server is down, remove the route
-        ip route del $ANYCAST_IP/32 via $server_ip dev $interface metric $metric 2>/dev/null || true
-        return 1
-    fi
-}
-
-# Check all servers
-check_server 10.0.1.10 eth1 10
-check_server 10.0.2.10 eth2 20
-check_server 10.0.3.10 eth4 30  # This goes through Router2
-
-SCRIPTEOF'
-    
-    sudo docker exec clab-anycast-network-router$router chmod +x /tmp/anycast-healthcheck.sh
-done
-
-echo "--- Running Initial Health Check ---"
-sudo docker exec clab-anycast-network-router1 /tmp/anycast-healthcheck.sh
-sudo docker exec clab-anycast-network-router2 /tmp/anycast-healthcheck.sh
-
-echo "--- BGP-style Anycast Setup Complete ---"
-
-# Show final routing
-echo -e "\nFinal Router1 routes:"
-sudo docker exec clab-anycast-network-router1 ip route show | grep 10.0.0.100
-
-echo -e "\nFinal Router2 routes:"
-sudo docker exec clab-anycast-network-router2 ip route show | grep 10.0.0.100
-EOF
-
-chmod +x working-anycast-bgp-style.sh
-./working-anycast-bgp-style.sh
-clear
-echo "=== Testing BGP-style Anycast ==="
-# Test initial state
-echo "Initial state - all servers should be reachable:"
-for client in 1 2; do     echo "Client$client:";     for i in {1..5}; do         response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);         echo "  Request $i: ${response:-FAILED}";     done; done
-cat > start-health-monitor.sh << 'EOF'
-#!/bin/bash
-
-echo "=== Starting Anycast Health Monitor ==="
-
-# Kill any existing health monitors
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router pkill -f "anycast-healthcheck" 2>/dev/null || true
-done
-
-# Start health monitoring on both routers
-for router in 1 2; do
-    echo "Starting health monitor on Router$router..."
-    sudo docker exec -d clab-anycast-network-router$router bash -c 'while true; do /tmp/anycast-healthcheck.sh; sleep 5; done'
-done
-
-echo "Health monitors started. They will check server status every 5 seconds."
-echo "Run './test-anycast-flip.sh' to test failover."
-EOF
-
-chmod +x start-health-monitor.sh
-./start-health-monitor.sh
-cat > test-anycast-flip.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Comprehensive Anycast Flip Test ==="
-
-show_status() {
-    echo "=== Current Status ==="
-    
-    # Show server status
-    echo "Server Status:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "✅ RUNNING" || echo "❌ STOPPED")"
-    done
-    
-    # Show router routes
-    echo -e "\nRouter1 anycast routes:"
-    sudo docker exec clab-anycast-network-router1 ip route show | grep 10.0.0.100 || echo "  No routes found"
-    
-    echo -e "\nRouter2 anycast routes:"
-    sudo docker exec clab-anycast-network-router2 ip route show | grep 10.0.0.100 || echo "  No routes found"
-}
-
-test_connectivity() {
-    echo -e "\n=== Connectivity Test ==="
-    for client in 1 2; do
-        echo "Client$client:"
-        success=0
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 2>/dev/null | grep -o "Server [0-9]" | head -1)
-            if [ -n "$response" ]; then
-                echo "  ✅ Request $i: $response"
-                ((success++))
-            else
-                echo "  ❌ Request $i: FAILED"
-            fi
-        done
-        echo "  Success rate: $success/5"
-    done
-}
-
-# Initial state
-echo ">>> PHASE 1: INITIAL STATE"
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 2: STOP SERVER1 (Client1 should failover to Server2)"
-echo "Stopping Server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 8  # Wait for health check to detect failure
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 3: STOP SERVER3 (Client2 should failover to Router1)"
-echo "Stopping Server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 8
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 4: RESTORE ALL SERVERS"
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-done
-sleep 8
-show_status
-test_connectivity
-
-echo -e "\n=== Anycast Flip Test Complete ==="
-EOF
-
-chmod +x test-anycast-flip.sh
-clear
-=clear
-clear
-cat > test-anycast-flip.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== Comprehensive Anycast Flip Test ==="
-
-show_status() {
-    echo "=== Current Status ==="
-    
-    # Show server status
-    echo "Server Status:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "✅ RUNNING" || echo "❌ STOPPED")"
-    done
-    
-    # Show router routes
-    echo -e "\nRouter1 anycast routes:"
-    sudo docker exec clab-anycast-network-router1 ip route show | grep 10.0.0.100 || echo "  No routes found"
-    
-    echo -e "\nRouter2 anycast routes:"
-    sudo docker exec clab-anycast-network-router2 ip route show | grep 10.0.0.100 || echo "  No routes found"
-}
-
-test_connectivity() {
-    echo -e "\n=== Connectivity Test ==="
-    for client in 1 2; do
-        echo "Client$client:"
-        success=0
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 2>/dev/null | grep -o "Server [0-9]" | head -1)
-            if [ -n "$response" ]; then
-                echo "  ✅ Request $i: $response"
-                ((success++))
-            else
-                echo "  ❌ Request $i: FAILED"
-            fi
-        done
-        echo "  Success rate: $success/5"
-    done
-}
-
-# Initial state
-echo ">>> PHASE 1: INITIAL STATE"
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 2: STOP SERVER1 (Client1 should failover to Server2)"
-echo "Stopping Server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 8  # Wait for health check to detect failure
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 3: STOP SERVER3 (Client2 should failover to Router1)"
-echo "Stopping Server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 8
-show_status
-test_connectivity
-
-echo -e "\n>>> PHASE 4: RESTORE ALL SERVERS"
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-done
-sleep 8
-show_status
-test_connectivity
-
-echo -e "\n=== Anycast Flip Test Complete ==="
-EOF
-
-chmod +x test-anycast-flip.sh
-clear
-# Run the comprehensive anycast flip test
-./test-anycast-flip.sh
-clear
-cat > fix-health-check.sh << 'EOF'
-#!/bin/bash
-
-echo "=== Fixing Health Check Script ==="
-
-# Create a better health check script
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router bash -c 'cat > /tmp/anycast-healthcheck-fixed.sh << "SCRIPTEOF"
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-# Function to check if a server is reachable and update route
-check_server_route() {
-    local target_ip=$1
-    local via_ip=$2
-    local dev=$3
-    local metric=$4
-    
-    echo "Checking server $target_ip via $via_ip on $dev..."
-    
-    # Try to ping the target IP (the server itself)
-    if ping -c 1 -W 1 $target_ip > /dev/null 2>&1; then
-        echo "  ✅ Server $target_ip is UP"
-        # Add or replace the route
-        ip route replace $ANYCAST_IP/32 via $via_ip dev $dev metric $metric 2>/dev/null
-        return 0
-    else
-        echo "  ❌ Server $target_ip is DOWN"
-        # Remove the route if it exists
-        ip route del $ANYCAST_IP/32 via $via_ip dev $dev metric $metric 2>/dev/null || true
-        return 1
-    fi
-}
-
-echo "=== Running Health Check ==="
-
-# Router1 specific checks
-if [ "$(hostname)" = "router1" ]; then
-    check_server_route 10.0.1.10 10.0.1.10 eth1 10
-    check_server_route 10.0.2.10 10.0.2.10 eth2 20
-    # For Server3 via Router2, check if Router2 is reachable
-    if ping -c 1 -W 1 10.0.10.2 > /dev/null 2>&1; then
-        echo "  ✅ Router2 is reachable"
-        ip route replace $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 30 2>/dev/null
-    else
-        echo "  ❌ Router2 is unreachable"
-        ip route del $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 30 2>/dev/null || true
-    fi
-fi
-
-# Router2 specific checks
-if [ "$(hostname)" = "router2" ]; then
-    check_server_route 10.0.3.10 10.0.3.10 eth1 10
-    # For Server1/Server2 via Router1, check if Router1 is reachable
-    if ping -c 1 -W 1 10.0.10.1 > /dev/null 2>&1; then
-        echo "  ✅ Router1 is reachable"
-        ip route replace $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 20 2>/dev/null
-    else
-        echo "  ❌ Router1 is unreachable"
-        ip route del $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 20 2>/dev/null || true
-    fi
-fi
-
-echo "=== Health Check Complete ==="
-echo "Current anycast routes:"
-ip route show | grep $ANYCAST_IP || echo "  No anycast routes"
-
-SCRIPTEOF'
-
-    sudo docker exec clab-anycast-network-router$router chmod +x /tmp/anycast-healthcheck-fixed.sh
-done
-
-echo "--- Testing Fixed Health Check ---"
-
-# Stop health monitors
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router pkill -f "anycast-healthcheck" 2>/dev/null || true
-done
-
-# Run the fixed health check
-echo "Running fixed health check on Router1:"
-sudo docker exec clab-anycast-network-router1 /tmp/anycast-healthcheck-fixed.sh
-
-echo -e "\nRunning fixed health check on Router2:"
-sudo docker exec clab-anycast-network-router2 /tmp/anycast-healthcheck-fixed.sh
-
-echo "--- Fixed Health Check Complete ---"
-EOF
-
-chmod +x fix-health-check.sh
-./fix-health-check.sh
-clear
-cat > start-fixed-health-monitor.sh << 'EOF'
-#!/bin/bash
-
-echo "=== Starting Fixed Health Monitor ==="
-
-# Kill any existing health monitors
-for router in 1 2; do
-    sudo docker exec clab-anycast-network-router$router pkill -f "anycast-healthcheck" 2>/dev/null || true
-done
-
-# Start the fixed health monitoring
-for router in 1 2; do
-    echo "Starting fixed health monitor on Router$router..."
-    sudo docker exec -d clab-anycast-network-router$router bash -c 'while true; do echo "$(date): Health check on $(hostname)"; /tmp/anycast-healthcheck-fixed.sh; sleep 5; done'
-    echo "  Health monitor started on Router$router"
-done
-
-echo "=== Fixed Health Monitors Started ==="
-echo "They will check server status every 5 seconds and log activity."
-EOF
-
-chmod +x start-fixed-health-monitor.sh
-./start-fixed-health-monitor.sh
-clear
-echo "=== Testing Fixed Health Monitoring ==="
-# Wait a moment for health checks to run
-sleep 6
-# Check current routes
-echo "Current anycast routes after health checks:"
-for router in 1 2; do     echo "Router$router:";     sudo docker exec clab-anycast-network-router$router ip route show | grep 10.0.0.100 || echo "  No routes"; done
-# Test connectivity
-echo -e "\nTesting connectivity with health monitoring:"
-for client in 1 2; do     echo "Client$client:";     for i in {1..3}; do         response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://10.0.0.100:8080 2>/dev/null | grep -o "Server [0-9]" | head -1);         echo "  Request $i: ${response:-FAILED}";     done; done
-clear
-cat > working-anycast-flip-test.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== WORKING ANYCAST FLIP TEST ==="
-
-wait_for_health_check() {
-    echo "Waiting for health checks to update routes..."
-    sleep 7
-}
-
-show_detailed_status() {
-    echo -e "\n=== DETAILED STATUS ==="
-    
-    # Server status
-    echo "SERVER STATUS:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-    done
-    
-    # Router routes
-    echo -e "\nROUTER ROUTES:"
-    for router in 1 2; do
-        echo "  Router$router:"
-        routes=$(sudo docker exec clab-anycast-network-router$router ip route show | grep "$ANYCAST_IP" || echo "    No routes")
-        echo "$routes" | sed 's/^/    /'
-    done
-}
-
-test_connectivity_detailed() {
-    echo -e "\n=== CONNECTIVITY TEST ==="
-    for client in 1 2; do
-        echo "Client$client:"
-        results=()
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 2>/dev/null | grep -o "Server [0-9]" | head -1)
-            if [ -n "$response" ]; then
-                results+=("$response")
-                echo "  ✅ Request $i: $response"
-            else
-                results+=("FAILED")
-                echo "  ❌ Request $i: FAILED"
-            fi
-        done
-        
-        # Calculate success rate and servers reached
-        success_count=0
-        servers_reached=()
-        for result in "${results[@]}"; do
-            if [ "$result" != "FAILED" ]; then
-                ((success_count++))
-                server_num=$(echo "$result" | cut -d' ' -f2)
-                servers_reached["$server_num"]=1
-            fi
-        done
-        
-        echo "  📊 Success: $success_count/5, Servers: ${!servers_reached[@]}"
-    done
-}
-
-# PHASE 1: Initial State
-echo ">>> PHASE 1: INITIAL STATE (All Servers Running)"
-show_detailed_status
-test_connectivity_detailed
-
-# PHASE 2: Stop Server1
-echo -e "\n>>> PHASE 2: STOPPING SERVER1 (Testing Failover)"
-echo "Stopping Server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-wait_for_health_check
-show_detailed_status
-test_connectivity_detailed
-
-# PHASE 3: Stop Server3  
-echo -e "\n>>> PHASE 3: STOPPING SERVER3 (Testing Cross-Router Failover)"
-echo "Stopping Server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-wait_for_health_check
-show_detailed_status
-test_connectivity_detailed
-
-# PHASE 4: Restore All
-echo -e "\n>>> PHASE 4: RESTORING ALL SERVERS"
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 /tmp/anycast-server.py
-done
-wait_for_health_check
-show_detailed_status
-test_connectivity_detailed
-
-echo -e "\n=== ANYCAST FLIP TEST COMPLETE ==="
-EOF
-
-chmod +x working-anycast-flip-test.sh
-clear
-# Run the working anycast flip test
-./working-anycast-flip-test.sh
-clear
-ls
-clear
-ls
-clear
-# Remove all the scripts we created
-rm -f *.sh *.yaml
-# Stop any running health monitors in the containers
-for router in 1 2; do     sudo docker exec clab-anycast-network-router$router pkill -f "anycast-healthcheck" 2>/dev/null || true;     sudo docker exec clab-anycast-network-router$router pkill -f "bash.*while" 2>/dev/null || true; done
-echo "=== Cleaned up all scripts and processes ==="
-clear
-ls
-clear
-echo "=== Checking Container Status ==="
-sudo containerlab inspect -t anycast-topology.yaml
-clear
-echo "=== Checking Container Status ==="
-sudo containerlab inspect -t anycast-topology.yaml
-clear
-echo "=== Checking Container Status ==="
-sudo containerlab inspect -t anycast-topology.yaml
-clear
-echo "=== Checking Running Containers ==="
-sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-echo -e "\n=== Checking ContainerLab Status ==="
-sudo containerlab inspect --all
-clear
-echo "=== Checking Running Containers ==="
-sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-echo -e "\n=== Checking ContainerLab Status ==="
-sudo containerlab inspect --all
-clear
-cat > quick-anycast.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== QUICK ANYCAST SETUP (10 minutes) ==="
-
-# Step 1: Install packages (2 minutes)
-echo "1/5 Installing packages..."
-for container in router1 router2 client1 client2 anycast-server1 anycast-server2 anycast-server3; do
-    echo "  - $container"
-    sudo docker exec clab-anycast-network-$container apt-get update > /dev/null 2>&1
-    sudo docker exec clab-anycast-network-$container apt-get install -y iproute2 net-tools iputils-ping curl python3 > /dev/null 2>&1 &
-done
-wait
-
-# Step 2: Configure IP addresses (2 minutes)
-echo "2/5 Configuring IP addresses..."
-
-# Router1
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.1.1/24 dev eth1
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.2.1/24 dev eth2
-sudo docker exec clab-anycast-network-router1 ip addr add 192.168.1.1/24 dev eth3
-sudo docker exec clab-anycast-network-router1 ip addr add 10.0.10.1/24 dev eth4
-
-# Router2
-sudo docker exec clab-anycast-network-router2 ip addr add 10.0.3.1/24 dev eth1
-sudo docker exec clab-anycast-network-router2 ip addr add 192.168.2.1/24 dev eth2
-sudo docker exec clab-anycast-network-router2 ip addr add 10.0.10.2/24 dev eth3
-
-# Servers
-sudo docker exec clab-anycast-network-anycast-server1 ip addr add 10.0.1.10/24 dev eth1
-sudo docker exec clab-anycast-network-anycast-server2 ip addr add 10.0.2.10/24 dev eth1
-sudo docker exec clab-anycast-network-anycast-server3 ip addr add 10.0.3.10/24 dev eth1
-
-# Clients
-sudo docker exec clab-anycast-network-client1 ip addr add 192.168.1.100/24 dev eth1
-sudo docker exec clab-anycast-network-client2 ip addr add 192.168.2.100/24 dev eth1
-
-# Step 3: Add anycast IP and enable forwarding (1 minute)
-echo "3/5 Setting up anycast IP and routing..."
-for server in 1 2 3; do
-    sudo docker exec clab-anycast-network-anycast-server$server ip addr add $ANYCAST_IP/32 dev lo
-done
-
-sudo docker exec clab-anycast-network-router1 bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-sudo docker exec clab-anycast-network-router2 bash -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
-
-# Step 4: Configure routes (2 minutes)
-echo "4/5 Configuring routes..."
-
-# Router routes to anycast
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-
-# Client default routes
-sudo docker exec clab-anycast-network-client1 ip route add default via 192.168.1.1 dev eth1
-sudo docker exec clab-anycast-network-client2 ip route add default via 192.168.2.1 dev eth1
-
-# Server default routes
-for server in 1 2 3; do
-    sudo docker exec clab-anycast-network-anycast-server$server ip route add default via 10.0.$server.1 dev eth1
-done
-
-# Step 5: Start HTTP servers (1 minute)
-echo "5/5 Starting HTTP servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-done
-
-echo "=== SETUP COMPLETE ==="
-EOF
-
-chmod +x quick-anycast.sh
+# The quick-anycast.sh has package installation - let it run that part
+echo "=== Running package installation from quick-anycast.sh ==="
 ./quick-anycast.sh
 clear
-cat > quick-test.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== QUICK ANYCAST TEST ==="
-
-# Test 1: Basic connectivity
-echo "1. Testing basic connectivity..."
-for client in 1 2; do
-    echo "Client$client to anycast IP:"
-    sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 $ANYCAST_IP
-    response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080)
-    echo "HTTP response: ${response:-FAILED}"
-    echo
-done
-
-# Test 2: Show which servers are responding
-echo "2. Identifying active servers..."
-for client in 1 2; do
-    echo "Client$client sees:"
-    for i in {1..3}; do
-        response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080)
-        echo "  Request $i: ${response:-FAILED}"
-    done
-    echo
-done
-EOF
-
-chmod +x quick-test.sh
-./quick-test.sh
-clear
-clear
-cat > quick-test.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== QUICK ANYCAST TEST ==="
-
-# Test 1: Basic connectivity
-echo "1. Testing basic connectivity..."
-for client in 1 2; do
-    echo "Client$client to anycast IP:"
-    sudo docker exec clab-anycast-network-client$client ping -c 2 -W 1 $ANYCAST_IP
-    response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080)
-    echo "HTTP response: ${response:-FAILED}"
-    echo
-done
-
-# Test 2: Show which servers are responding
-echo "2. Identifying active servers..."
-for client in 1 2; do
-    echo "Client$client sees:"
-    for i in {1..3}; do
-        response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080)
-        echo "  Request $i: ${response:-FAILED}"
-    done
-    echo
-done
-EOF
-
-chmod +x quick-test.sh
-./quick-test.sh
-clear
-cat > quick-flip-demo.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== QUICK ANYCAST FLIP DEMO ==="
-
-test_anycast() {
-    echo "Current state:"
-    for client in 1 2; do
-        echo -n "Client$client: "
-        response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-        echo "${response:-NO RESPONSE}"
-    done
-    echo
-}
-
-echo ">>> PHASE 1: Initial state (all servers running)"
-test_anycast
-
-echo ">>> PHASE 2: Stopping Server1"
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 2
-test_anycast
-
-echo ">>> PHASE 3: Stopping Server3"  
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 2
-test_anycast
-
-echo ">>> PHASE 4: Restarting all servers"
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-done
-sleep 3
-test_anycast
-
-echo "=== DEMO COMPLETE ==="
-EOF
-
-chmod +x quick-flip-demo.sh
-clear
-# Run the quick anycast flip demo
-./quick-flip-demo.sh
-clear
-# Run the quick anycast flip demo
-./quick-flip-demo.sh
-clear
-cat > fix-failover.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== FIXING ANYCAST FAILOVER ==="
-
-# Remove existing anycast routes
-sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-
-# Configure Router1 with multiple routes (Linux will try them in order)
-echo "Configuring Router1 with failover routes..."
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.10.2 dev eth4
-
-# Configure Router2 with multiple routes
-echo "Configuring Router2 with failover routes..."
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.10.1 dev eth3
-
-echo "=== FAILOVER CONFIGURATION COMPLETE ==="
-
-# Test the new routing
-echo -e "\nTesting new routing..."
-for client in 1 2; do
-    echo "Client$client:"
-    for i in {1..5}; do
-        response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-        echo "  Request $i: ${response:-FAILED}"
-    done
-done
-EOF
-
-chmod +x fix-failover.sh
-./fix-failover.sh
-clear
-cat > enhanced-flip-demo.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== ENHANCED ANYCAST FLIP DEMO ==="
-
-test_anycast_detailed() {
-    echo "=== CURRENT STATE ==="
-    
-    # Show server status
-    echo "Server Status:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-    done
-    
-    # Test connectivity
-    echo -e "\nConnectivity:"
-    for client in 1 2; do
-        echo "Client$client:"
-        responses=()
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-            if [ -n "$response" ]; then
-                responses+=("$response")
-                echo "  ✅ Request $i: $response"
-            else
-                responses+=("FAILED")
-                echo "  ❌ Request $i: FAILED"
-            fi
-        done
-        
-        # Calculate success and unique servers
-        success=0
-        servers=()
-        for response in "${responses[@]}"; do
-            if [ "$response" != "FAILED" ]; then
-                ((success++))
-                server_num=$(echo "$response" | grep -o "Server [0-9]" | cut -d' ' -f2)
-                servers["$server_num"]=1
-            fi
-        done
-        
-        server_list=$(echo "${!servers[@]}" | tr ' ' ',')
-        echo "  📊 Success: $success/5, Servers: ${server_list:-none}"
-    done
-    echo
-}
-
-echo ">>> PHASE 1: INITIAL STATE (All servers running)"
-test_anycast_detailed
-
-echo ">>> PHASE 2: STOP SERVER1 (Client1 should failover to Server2)"
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 3
-test_anycast_detailed
-
-echo ">>> PHASE 3: STOP SERVER3 (Client2 should failover to Router1)"
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 3
-test_anycast_detailed
-
-echo ">>> PHASE 4: RESTART ALL SERVERS"
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-done
-sleep 3
-test_anycast_detailed
-
-echo "=== DEMO COMPLETE ==="
-EOF
-
-chmod +x enhanced-flip-demo.shclear
-cat > enhanced-flip-demo.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== ENHANCED ANYCAST FLIP DEMO ==="
-
-test_anycast_detailed() {
-    echo "=== CURRENT STATE ==="
-    
-    # Show server status
-    echo "Server Status:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-    done
-    
-    # Test connectivity
-    echo -e "\nConnectivity:"
-    for client in 1 2; do
-        echo "Client$client:"
-        responses=()
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-            if [ -n "$response" ]; then
-                responses+=("$response")
-                echo "  ✅ Request $i: $response"
-            else
-                responses+=("FAILED")
-                echo "  ❌ Request $i: FAILED"
-            fi
-        done
-        
-        # Calculate success and unique servers
-        success=0
-        servers=()
-        for response in "${responses[@]}"; do
-            if [ "$response" != "FAILED" ]; then
-                ((success++))
-                server_num=$(echo "$response" | grep -o "Server [0-9]" | cut -d' ' -f2)
-                servers["$server_num"]=1
-            fi
-        done
-        
-        server_list=$(echo "${!servers[@]}" | tr ' ' ',')
-        echo "  📊 Success: $success/5, Servers: ${server_list:-none}"
-    done
-    echo
-}
-
-echo ">>> PHASE 1: INITIAL STATE (All servers running)"
-test_anycast_detailed
-
-echo ">>> PHASE 2: STOP SERVER1 (Client1 should failover to Server2)"
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 3
-test_anycast_detailed
-
-echo ">>> PHASE 3: STOP SERVER3 (Client2 should failover to Router1)"
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 3
-test_anycast_detailed
-
-echo ">>> PHASE 4: RESTART ALL SERVERS"
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-done
-sleep 3
-test_anycast_detailed
-
-echo "=== DEMO COMPLETE ==="
-EOF
-
-chmod +x enhanced-flip-demo.sh
-clear
-# Run the enhanced anycast flip demo
-./enhanced-flip-demo.sh
-clear
-clear
-# Run the enhanced anycast flip demo
-./enhanced-flip-demo.sh
-clear
-cat > anycast-route-manager.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== ANYCAST ROUTE MANAGER ==="
-
-# Function to update routes based on server status
-update_routes() {
-    echo "Updating routes based on server status..."
-    
-    # Router1: Clear all anycast routes
-    sudo docker exec clab-anycast-network-router1 ip route del $ANYCAST_IP/32 2>/dev/null || true
-    
-    # Router2: Clear all anycast routes  
-    sudo docker exec clab-anycast-network-router2 ip route del $ANYCAST_IP/32 2>/dev/null || true
-    
-    # Add routes only for running servers
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        if [ $status -eq 1 ]; then
-            echo "🟢 Server$server is RUNNING - adding route"
-            if [ $server -eq 1 ]; then
-                sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.1.10 dev eth1
-            elif [ $server -eq 2 ]; then
-                sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.2.10 dev eth2
-            elif [ $server -eq 3 ]; then
-                sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.3.10 dev eth1
-            fi
-        else
-            echo "🔴 Server$server is STOPPED - skipping route"
-        fi
-    done
-    
-    # Always add cross-router backup routes (they'll only work if the other router has active servers)
-    sudo docker exec clab-anycast-network-router1 ip route add $ANYCAST_IP/32 via 10.0.10.2 dev eth4 metric 100
-    sudo docker exec clab-anycast-network-router2 ip route add $ANYCAST_IP/32 via 10.0.10.1 dev eth3 metric 100
-    
-    echo "Route update complete!"
-}
-
-# Update routes immediately
-update_routes
-
-# Show current status
-echo -e "\n=== CURRENT ROUTES ==="
-echo "Router1:"
-sudo docker exec clab-anycast-network-router1 ip route show | grep $ANYCAST_IP || echo "  No routes found"
-echo "Router2:"
-sudo docker exec clab-anycast-network-router2 ip route show | grep $ANYCAST_IP || echo "  No routes found"
-
-echo -e "\n=== TESTING CONNECTIVITY ==="
-for client in 1 2; do
-    echo "Client$client:"
-    for i in {1..3}; do
-        response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-        echo "  Request $i: ${response:-FAILED}"
-    done
-done
-EOF
-
-chmod +x anycast-route-manager.sh
-clear
-cat > working-flip-demo.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-echo "=== WORKING ANYCAST FLIP DEMO ==="
-
-show_status() {
-    echo "=== SYSTEM STATUS ==="
-    echo "Servers:"
-    for server in 1 2 3; do
-        status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-        echo "  Server$server: $([ $status -eq 1 ] && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-    done
-}
-
-test_connectivity() {
-    echo -e "\n=== CONNECTIVITY TEST ==="
-    for client in 1 2; do
-        echo "Client$client:"
-        success=0
-        servers_reached=()
-        for i in {1..5}; do
-            response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-            if [ -n "$response" ]; then
-                echo "  ✅ $response"
-                ((success++))
-                # Extract server number
-                server_num=$(echo "$response" | grep -o "Server [0-9]" | cut -d' ' -f2)
-                servers_reached["$server_num"]=1
-            else
-                echo "  ❌ FAILED"
-            fi
-        done
-        server_list=$(echo "${!servers_reached[@]}" | tr ' ' ',')
-        echo "  📊 Success: $success/5, Servers: ${server_list:-none}"
-    done
-}
-
-# PHASE 1: Initial setup
-echo ">>> PHASE 1: INITIAL SETUP"
+# Now run the adaptive setup that detects interfaces
+./adaptive-anycast-setup.sh
+# Or run the route manager
 ./anycast-route-manager.sh
-show_status
-test_connectivity
-
-# PHASE 2: Stop Server1 - should failover to Server2
-echo -e "\n>>> PHASE 2: STOP SERVER1 (Testing failover to Server2)"
-echo "Stopping Server1..."
-sudo docker exec clab-anycast-network-anycast-server1 pkill -f "python3"
-sleep 2
-./anycast-route-manager.sh
-show_status
-test_connectivity
-
-# PHASE 3: Stop Server3 - should failover to Router1 (Server2)
-echo -e "\n>>> PHASE 3: STOP SERVER3 (Testing cross-router failover)"
-echo "Stopping Server3..."
-sudo docker exec clab-anycast-network-anycast-server3 pkill -f "python3"
-sleep 2
-./anycast-route-manager.sh
-show_status
-test_connectivity
-
-# PHASE 4: Restore all servers
-echo -e "\n>>> PHASE 4: RESTORE ALL SERVERS"
-echo "Starting all servers..."
-for server in 1 2 3; do
-    sudo docker exec -d clab-anycast-network-anycast-server$server python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-done
-sleep 3
-./anycast-route-manager.sh
-show_status
-test_connectivity
-
-echo -e "\n=== DEMO COMPLETE ==="
-EOF
-
-chmod +x working-flip-demo.sh
 clear
-cat > anycast-auto-manager.sh << 'EOF'
-#!/bin/bash
-
-ANYCAST_IP="10.0.0.100"
-
-case "$1" in
-    "start")
-        echo "Starting server $2..."
-        sudo docker exec -d clab-anycast-network-anycast-server$2 python3 -c "
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        hostname = socket.gethostname()
-        self.wfile.write(f'Response from {hostname} (Server {hostname[-1]})'.encode())
-    def log_message(self, *args):
-        pass
-
-HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
-" &
-        sleep 2
-        ./anycast-route-manager.sh
-        ;;
-    "stop")
-        echo "Stopping server $2..."
-        sudo docker exec clab-anycast-network-anycast-server$2 pkill -f "python3"
-        sleep 2
-        ./anycast-route-manager.sh
-        ;;
-    "status")
-        echo "=== ANYCAST STATUS ==="
-        for server in 1 2 3; do
-            status=$(sudo docker exec clab-anycast-network-anycast-server$server ps aux | grep python | grep -v grep | wc -l)
-            echo "Server$server: $([ $status -eq 1 ] && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-        done
-        echo -e "\n=== ROUTES ==="
-        echo "Router1:"
-        sudo docker exec clab-anycast-network-router1 ip route show | grep $ANYCAST_IP || echo "  No routes"
-        echo "Router2:"
-        sudo docker exec clab-anycast-network-router2 ip route show | grep $ANYCAST_IP || echo "  No routes"
-        ;;
-    "test")
-        echo "=== ANYCAST TEST ==="
-        for client in 1 2; do
-            echo "Client$client:"
-            for i in {1..3}; do
-                response=$(sudo docker exec clab-anycast-network-client$client curl -s --connect-timeout 2 http://$ANYCAST_IP:8080 | head -1)
-                echo "  $([ -n "$response" ] && echo "✅ $response" || echo "❌ FAILED")"
-            done
-        done
-        ;;
-    "demo")
-        ./working-flip-demo.sh
-        ;;
-    "monitor")
-        echo "Starting anycast monitor (Ctrl+C to stop)..."
-        while true; do
-            clear
-            ./anycast-auto-manager.sh status
-            echo -e "\nPress Ctrl+C to stop monitoring"
-            sleep 5
-        done
-        ;;
-    *)
-        echo "Usage: $0 {start|stop <server_num>|status|test|demo|monitor}"
-        echo ""
-        echo "Examples:"
-        echo "  $0 status          - Show server status and routes"
-        echo "  $0 test            - Test anycast connectivity"
-        echo "  $0 stop 1          - Stop server 1 and update routes"
-        echo "  $0 start 1         - Start server 1 and update routes" 
-        echo "  $0 demo            - Run complete flip demo"
-        echo "  $0 monitor         - Continuous monitoring"
-        ;;
-esac
-EOF
-
-chmod +x anycast-auto-manager.sh
+# Our working demo script should handle everything
+./working-flip-demo.sh
 clear
-# First, update all routes based on current server status
+# Run just the package installation part of our quick script
+echo "=== Installing packages ==="
+for container in router1 router2 client1 client2 anycast-server1 anycast-server2 anycast-server3; do     echo "  - $container";     sudo docker exec clab-anycast-network-$container apt-get update > /dev/null 2>&1;     sudo docker exec clab-anycast-network-$container apt-get install -y iproute2 net-tools iputils-ping curl python3 > /dev/null 2>&1; done
+clear
+# This script detects actual interface names and configures everything
+./adaptive-anycast-setup.sh
+# Update routes based on current server status
 ./anycast-route-manager.sh
-# Test the current state
-./anycast-auto-manager.sh status
+clear
+echo "=== CURRENT NETWORK STATE ==="
+for container in router1 router2 client1 client2 anycast-server1 anycast-server2 anycast-server3; do     echo "--- $container ---";     sudo docker exec clab-anycast-network-$container ip -4 addr show;     echo; done
+clear
+# This script detects actual interface names and configures IPs
+./adaptive-anycast-setup.sh
+# Run the fixed setup we created earlier
+./fixed-anycast-setup.sh
+clear
+# Test basic connectivity
 ./anycast-auto-manager.sh test
-# Run the complete working demo
-./working-flip-demo.sh
-./working-flip-demo.sh
+# Test basic connectivity
+./anycast-auto-manager.sh test
+# Destroy and recreate everything
+sudo containerlab destroy -t anycast-topology.yaml --cleanup
+sleep 5
+sudo containerlab deploy -t anycast-topology.yaml
+sleep 10
+# Then run our complete setup
+./quick-anycast.sh
 clear
-./working-flip-demo.sh
+sudo docker ps
+sudo containerlab deploy -t anycast-topology.yaml
+sudo containerlab deploy -t anycast-topology.yaml --reconfigure
 clear
 ls
-./working-flip-demo.sh
+containerlab version
+sudo docker ps
 clear
-clear
+# Remove all script files but keep containerlab
+ubuntu@anycast-vm:~$ rm adaptive-anycast-setup.sh anycast-topology.yaml fixed-anycast-setup.sh quick-test.sh
+ubuntu@anycast-vm:~$ rm anycast-auto-manager.sh enhanced-flip-demo.sh quick-anycast.sh simple-working-setup.sh
+ubuntu@anycast-vm:~$ rm anycast-route-manager.sh fix-failover.sh quick-flip-demo.sh working-flip-demo.sh
+# Remove the containerlab directory (the extracted one, not the binary)
+ubuntu@anycast-vm:~$ rm -rf clab-anycast-network/
+# Verify what's left
+ubuntu@anycast-vm:~$ ls
+containerlab  containerlab-linux-amd64
 ls
 clear
-git init
-git add .
-cat > .gitignore << 'EOF'
-clab-anycast-network/
-containerlab*
-*.pcap
-*.log
-tmp/
+rm adaptive-anycast-setup.sh anycast-topology.yaml fixed-anycast-setup.sh quick-test.sh
+rm anycast-auto-manager.sh enhanced-flip-demo.sh quick-anycast.sh simple-working-setup.sh
+rm anycast-route-manager.sh fix-failover.sh quick-flip-demo.sh working-flip-demo.sh
+rm -rf clab-anycast-network/
+ls
+clear
+sudo docker ps
+sudo containerlab deploy -t anycast-topology.yaml
+clear
+ls
+sudo docker ps
+clear
+ls
+clea
+clear
+mkdir -p ~/anycast-lab
+cd ~/anycast-lab
+cat > anycast.clab.yml <<'EOF'
+name: anycast-network
+topology:
+  nodes:
+    router1:
+      kind: linux
+      image: frrouting/frr:8.4.2
+    router2:
+      kind: linux
+      image: frrouting/frr:8.4.2
+    anycast-server1:
+      kind: linux
+      image: frrouting/frr:8.4.2
+    anycast-server2:
+      kind: linux
+      image: frrouting/frr:8.4.2
+    anycast-server3:
+      kind: linux
+      image: frrouting/frr:8.4.2
+    client1:
+      kind: linux
+      image: ubuntu:20.04
+    client2:
+      kind: linux
+      image: ubuntu:20.04
+
+  links:
+    - endpoints: ["client1:eth1", "router1:eth1"]
+    - endpoints: ["client2:eth1", "router2:eth1"]
+    - endpoints: ["router1:eth2", "router2:eth2"]
+    - endpoints: ["router1:eth3", "anycast-server1:eth1"]
+    - endpoints: ["router1:eth4", "anycast-server2:eth1"]
+    - endpoints: ["router2:eth3", "anycast-server3:eth1"]
 EOF
 
-git rm -r --cached clab-anycast-network/ containerlab* 2>/dev/null || true
-git status
+# 3. show the file you just created
+echo "---- anycast.clab.yml ----"
+cat anycast.clab.yml
+echo "--------------------------"
 clear
-git commit -m "Initial commit: Complete anycast network simulation with automatic failover"
-git config --global user.email "virfiver@gmail.com"
-git config --global user.name "vir1517"
-git commit -m "Initial commit: Complete anycast network simulation with automatic failover"
-git remote add origin https://github.com/vir1517/anycastsimulation.git
-git push -u origin main
-git push -u origin master
-git push -u origin main
+cd ~/anycast-lab
 clear
-git branch -a
-git branch -M main
-git push -u origin main
+mkdir -p configs/{router1,router2,anycast-server1,anycast-server2,anycast-server3}
+cat > configs/daemons <<'EOF'
+zebra=yes
+bgpd=yes
+ospfd=no
+ospf6d=no
+ripd=no
+ldpd=no
+eigrpd=no
+EOF
+
+for n in router1 router2 anycast-server1 anycast-server2 anycast-server3; do   cp configs/daemons configs/$n/; done
+tree configs
+ls -R configs
+clear
+ls -R configs
+clear
+ls -R configs
+clear
+cd ~/anycast-lab
+# 1. Create zebra.conf for router1 (defines IPs on its interfaces)
+cat > configs/router1/zebra.conf <<'EOF'
+!
+hostname router1
+!
+interface eth1
+ ip address 10.10.1.1/24
+!
+interface eth2
+ ip address 10.10.12.2/24
+!
+interface eth3
+ ip address 10.10.3.1/24
+!
+interface eth4
+ ip address 10.10.4.1/24
+!
+line vty
+!
+EOF
+
+# 2. Create bgpd.conf for router1 (defines BGP neighbors)
+cat > configs/router1/bgpd.conf <<'EOF'
+router bgp 65100
+ bgp router-id 1.1.1.1
+
+ # Peering with router2 (AS 65200)
+ neighbor 10.10.12.1 remote-as 65200
+
+ # Peering with anycast servers (AS 65300)
+ neighbor 10.10.3.2 remote-as 65300
+ neighbor 10.10.4.2 remote-as 65300
+
+ address-family ipv4 unicast
+  neighbor 10.10.12.1 activate
+  neighbor 10.10.3.2 activate
+  neighbor 10.10.4.2 activate
+ exit-address-family
+!
+line vty
+!
+EOF
+
+# 3. Verify the files
+echo "---- router1 zebra.conf ----"
+cat configs/router1/zebra.conf
+echo "---- router1 bgpd.conf ----"
+cat configs/router1/bgpd.conf
+clear
+cat > configs/router2/zebra.conf <<'EOF'
+!
+hostname router2
+!
+interface eth1
+ ip address 10.10.2.1/24
+!
+interface eth2
+ ip address 10.10.12.1/24
+!
+interface eth3
+ ip address 10.10.5.1/24
+!
+line vty
+!
+EOF
+
+# 2. Create bgpd.conf for router2
+cat > configs/router2/bgpd.conf <<'EOF'
+router bgp 65200
+ bgp router-id 2.2.2.2
+
+ # Peering with router1 (AS 65100)
+ neighbor 10.10.12.2 remote-as 65100
+
+ # Peering with anycast-server3 (AS 65300)
+ neighbor 10.10.5.2 remote-as 65300
+
+ address-family ipv4 unicast
+  neighbor 10.10.12.2 activate
+  neighbor 10.10.5.2 activate
+ exit-address-family
+!
+line vty
+!
+EOF
+
+clear
+echo "---- router2 zebra.conf ----"
+cat configs/router2/zebra.conf
+echo "---- router2 bgpd.conf ----"
+cat configs/router2/bgpd.conf
+clear
+cat > configs/anycast-server1/zebra.conf <<'EOF'
+!
+hostname anycast-server1
+!
+interface eth1
+ ip address 10.10.3.2/24
+!
+ip route 0.0.0.0/0 10.10.3.1
+!
+line vty
+!
+EOF
+
+cat > configs/anycast-server1/bgpd.conf <<'EOF'
+router bgp 65300
+ bgp router-id 3.3.3.3
+ neighbor 10.10.3.1 remote-as 65100
+
+ address-family ipv4 unicast
+  network 203.0.113.8/32
+  neighbor 10.10.3.1 activate
+ exit-address-family
+!
+line vty
+!
+EOF
+
+cat > configs/anycast-server2/zebra.conf <<'EOF'
+!
+hostname anycast-server2
+!
+interface eth1
+ ip address 10.10.4.2/24
+!
+ip route 0.0.0.0/0 10.10.4.1
+!
+line vty
+!
+EOF
+
+cat > configs/anycast-server2/bgpd.conf <<'EOF'
+router bgp 65300
+ bgp router-id 4.4.4.4
+ neighbor 10.10.4.1 remote-as 65100
+
+ address-family ipv4 unicast
+  network 203.0.113.8/32
+  neighbor 10.10.4.1 activate
+ exit-address-family
+!
+line vty
+!
+EOF
+
+cat > configs/anycast-server3/zebra.conf <<'EOF'
+!
+hostname anycast-server3
+!
+interface eth1
+ ip address 10.10.5.2/24
+!
+ip route 0.0.0.0/0 10.10.5.1
+!
+line vty
+!
+EOF
+
+cat > configs/anycast-server3/bgpd.conf <<'EOF'
+router bgp 65300
+ bgp router-id 5.5.5.5
+ neighbor 10.10.5.1 remote-as 65200
+
+ address-family ipv4 unicast
+  network 203.0.113.8/32
+  neighbor 10.10.5.1 activate
+ exit-address-family
+!
+line vty
+!
+EOF
+
+clear
+ls -R configs/anycast-server*
+clear
+ls -R configs/anycast-server*
+clear
+cd ~/anycast-lab
+# Backup the old topology (just in case)
+cp anycast.clab.yml anycast.clab.yml.bak
+# Create the updated topology file
+cat > anycast.clab.yml <<'EOF'
+name: anycast-network
+topology:
+  nodes:
+    router1:
+      kind: linux
+      image: frrouting/frr:8.4.2
+      config: ./configs/router1
+    router2:
+      kind: linux
+      image: frrouting/frr:8.4.2
+      config: ./configs/router2
+    anycast-server1:
+      kind: linux
+      image: frrouting/frr:8.4.2
+      config: ./configs/anycast-server1
+    anycast-server2:
+      kind: linux
+      image: frrouting/frr:8.4.2
+      config: ./configs/anycast-server2
+    anycast-server3:
+      kind: linux
+      image: frrouting/frr:8.4.2
+      config: ./configs/anycast-server3
+    client1:
+      kind: linux
+      image: ubuntu:20.04
+    client2:
+      kind: linux
+      image: ubuntu:20.04
+
+  links:
+    - endpoints: ["client1:eth1", "router1:eth1"]
+    - endpoints: ["client2:eth1", "router2:eth1"]
+    - endpoints: ["router1:eth2", "router2:eth2"]
+    - endpoints: ["router1:eth3", "anycast-server1:eth1"]
+    - endpoints: ["router1:eth4", "anycast-server2:eth1"]
+    - endpoints: ["router2:eth3", "anycast-server3:eth1"]
+EOF
+
+# Check the file
+echo "---- anycast.clab.yml ----"
+cat anycast.clab.yml
+echo "--------------------------"
+clear
+cd ~/anycast-lab
+# 1. Deploy the topology using your containerlab binary
+sudo ~/containerlab-linux-amd64 deploy -t anycast.clab.yml
+clear
+sudo ~/containerlab-linux-amd64 deploy -t anycast.clab.yml
+clear
+sudo ~/containerlab-linux-amd64 deploy -t anycast.clab.yml
+cd ~
+chmod +x containerlab-linux-amd64
+./containerlab-linux-amd64 version
+clear
+rm -f ~/containerlab-linux-amd64
+curl -Lo containerlab https://github.com/srl-labs/containerlab/releases/latest/download/containerlab-linux-amd64
+chmod +x containerlab
+sudo mv containerlab /usr/local/bin/
+containerlab version
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo rm -f /usr/local/bin/containerlab
+curl -L -o containerlab https://github.com/srl-labs/containerlab/releases/latest/download/containerlab-linux-amd64
+ls -lh containerlab
+chmod +x containerlab
+sudo mv containerlab /usr/local/bin/
+containerlab version
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+ping -c 3 google.com
+curl -L -o containerlab https://get.containerlab.dev
+ls -lh containerlab
+chmod +x containerlab
+sudo mv containerlab /usr/local/bin/
+containerlab version
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo ./containerlab
+clear
+curl -L -o install.sh https://get.containerlab.dev
+chmod +x install.sh
+sudo ./install.sh
+containerlab version
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo rm -f /usr/local/bin/containerlab
+which containerlab
+containerlab version
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+cd anycast-lab/
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+mkdir -p ~/anycast-lab/configs/{router1,router2,router3,anycast-server1,anycast-server2,anycast-server3}
+cat <<EOF | sudo tee ~/anycast-lab/configs/router1/frr.conf
+frr defaults traditional
+hostname router1
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 10.0.1.1/24
+!
+interface eth2
+ ip address 10.0.2.1/24
+!
+router bgp 65001
+ bgp router-id 1.1.1.1
+ neighbor 10.0.2.2 remote-as 65002
+ network 10.0.1.0/24
+!
+line vty
+EOF
+
+cat <<EOF | sudo tee ~/anycast-lab/configs/router2/frr.conf
+frr defaults traditional
+hostname router2
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 10.0.3.1/24
+!
+interface eth2
+ ip address 10.0.2.2/24
+!
+interface eth3
+ ip address 10.0.4.2/24
+!
+router bgp 65002
+ bgp router-id 2.2.2.2
+ neighbor 10.0.2.1 remote-as 65001
+ neighbor 10.0.4.3 remote-as 65003
+ network 10.0.3.0/24
+EOF
+
+cat <<EOF | sudo tee ~/anycast-lab/configs/router3/frr.conf
+frr defaults traditional
+hostname router3
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 10.0.4.3/24
+!
+router bgp 65003
+ bgp router-id 3.3.3.3
+ neighbor 10.0.4.2 remote-as 65002
+ network 10.0.4.0/24
+EOF
+
+cat <<EOF | sudo tee ~/anycast-lab/configs/anycast-server1/frr.conf
+frr defaults traditional
+hostname anycast-server1
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 192.0.2.1/32
+!
+router bgp 65010
+ bgp router-id 10.10.10.1
+ neighbor 10.0.1.1 remote-as 65001
+ network 192.0.2.1/32
+EOF
+
+cat <<EOF | sudo tee ~/anycast-lab/configs/anycast-server2/frr.conf
+frr defaults traditional
+hostname anycast-server2
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 192.0.2.1/32
+!
+router bgp 65010
+ bgp router-id 10.10.10.2
+ neighbor 10.0.3.1 remote-as 65002
+ network 192.0.2.1/32
+EOF
+
+cat <<EOF | sudo tee ~/anycast-lab/configs/anycast-server3/frr.conf
+frr defaults traditional
+hostname anycast-server3
+service integrated-vtysh-config
+!
+interface eth1
+ ip address 192.0.2.1/32
+!
+router bgp 65010
+ bgp router-id 10.10.10.3
+ neighbor 10.0.4.3 remote-as 65003
+ network 192.0.2.1/32
+EOF
+
+clear
+ls -R ~/anycast-lab/configs
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+ls -R ~/anycast-lab/configs
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo systemctl restart docker
+sudo systemctl status docker
+clear
+sudo su
+clerar
+clear
+root@anycast-vm:/home/ubuntu/anycast-lab# ls -ld /proc /proc/0 || echo "No /proc/0"
+ls: cannot access '/proc/0': No such file or directory
+dr-xr-xr-x 185 root root 0 Nov  7 19:38 /proc
+No /proc/0
+root@anycast-vm:/home/ubuntu/anycast-lab# 
+clear
+ls -ld /proc /proc/0 || echo "No /proc/0"
+clear
+sudo containerlab destroy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+sudo systemctl restart docker
+sudo containerlab deploy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+clear
+sudo containerlab destroy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+sudo systemctl restart docker
+sudo containerlab deploy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+clear
+sudo containerlab destroy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+sudo systemctl restart docker
+sudo containerlab deploy -t /home/ubuntu/anycast-lab/anycast.clab.yml
+clear
+sudo docker ps -a
+sudo docker logs clab-anycast-lab-anycast-server1 | head -40
+sudo docker logs clab-anycast-lab-router3 | head -40
+clear
+sudo containerlab destroy -t ~/anycast-lab/anycast.clab.yml
+sudo docker pull --platform linux/amd64 frrouting/frr:8.4.2
+clear
+uname -m
+sudo docker pull --platform linux/arm64 frrouting/frr:10.1
+clear
+sudo docker pull ghcr.io/srl-labs/frr:10.1
+sudo docker pull ghcr.io/srl-labs/frr:10.0
+clear
+sudo docker pull quay.io/frrouting/frr:10.0-arm64
+git clone https://github.com/FRRouting/frr.git
+cd frr
+docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+cd ~/anycast-lab/frr/docker
+ls
+find ~/anycast-lab/frr/docker -maxdepth 2 -name "Dockerfile"
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+nano Dockerfile
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+cd ~/anycast-lab/frr
+ls bootstrap.sh
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+cd docker/ubuntu22-ci/Dockerfile
+clear
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+sudo nano Dockerfile
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+cd ~/anycast-lab/frr
+ls bootstrap.sh
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+sudo nano Dockerfile
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+nano Dockerfile
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+nano Dockerfile
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+sudo docker images
+sudo docker run -it --rm --name frr-test --privileged frr-arm64:local bash
+clea
+clear
+sudo containerlab destroy -t ~/anycast-lab/anycast.clab.yml
+sudo systemctl restart docker
+nano ~/anycast-lab/anycast.clab.yml
+sudo docker system prune -af
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab destroy -t ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+nano ~/anycast-lab/anycast.clab.yml
+sudo containerlab destroy -t ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+nano ~/anycast-lab/anycast.clab.yml
+cd ~/anycast-lab/frr
+sudo containerlab destroy -t ~/anycast-lab/anycast.clab.yml
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+mkdir -p ~/anycast-lab/configs
+echo "hostname r1
+service integrated-vtysh-config
+log file /var/log/frr.log" > ~/anycast-lab/configs/r1.conf
+echo "hostname r2
+service integrated-vtysh-config
+log file /var/log/frr.log" > ~/anycast-lab/configs/r2.conf
+echo "hostname r3
+service integrated-vtysh-config
+log file /var/log/frr.log" > ~/anycast-lab/configs/r3.conf
+echo "hostname anycast1
+service integrated-vtysh-config
+log file /var/log/frr.log" > ~/anycast-lab/configs/anycast1.conf
+echo "hostname anycast2
+service integrated-vtysh-config
+log file /var/log/frr.log" > ~/anycast-lab/configs/anycast2.conf
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+sudo docker images
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+sudo docker images
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo docker run -it frr-arm64:local /bin/bash
+clear
+sudo docker rmi frr-arm64:local
+sudo docker ps -a | grep frr-arm64
+sudo docker rm -f $(sudo docker ps -aq --filter ancestor=frr-arm64:local)
+sudo docker rmi frr-arm64:local
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+sudo docker run -it frr-arm64:local /bin/bash
+ls /usr/lib/frr/
+clear
+nano ~/anycast-lab/frr/docker/ubuntu22-ci/Dockerfile
+sudo docker rm -f $(sudo docker ps -aq --filter ancestor=frr-arm64:local)
+sudo docker rmi -f frr-arm64:local
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+sudo docker run -it frr-arm64:local /bin/bash
+clear
+sudo containerlab deploy -t ~/anycast-lab/anycast.clab.yml
+clear
+sudo docker run -it frr-arm64:local /bin/bash
+cd ~/anycast-lab/frr
+clear
+nano Dockerfile
+ls
+nano Dockerfile
+clear
+cd ~/anycast-lab/frr
+nano Dockerfile
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+nano Dockerfile
+sudo docker system df
+sudo docker container prune -f
+sudo docker image prune -f
+sudo docker image prune -a -f
+sudo docker builder prune -a -f
+sudo docker network prune -f
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local .
+clear
+sudo docker stop $(sudo docker ps -aq) 2>/dev/null
+sudo docker rm $(sudo docker ps -aq) 2>/dev/null
+sudo docker system prune -a --volumes -f
+df -h /
+clear
+cd ~/anycast-lab/frr/docker/ubuntu22-ci
+sudo nano Dockerfile
+cd ..
+clear
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+sudo docker run -it frr-arm64:local /bin/bash
+clear
+sudo docker exec -it dc866442da44 /bin/bash
+nano docker/
+nano dockerfile
+clear
+ls
+nano Dockerfile 
+clear
+sudo docker ps -aq | xargs -r sudo docker stop
+sudo docker ps -aq | xargs -r sudo docker rm
+sudo docker images -aq | xargs -r sudo docker rmi -f
+sudo docker builder prune -af
+sudo docker volume prune -f
+clear
+sudo docker build -t frr-arm64:local .
+clear
+cd ~/anycast-lab/frr
+sudo rm -f docker/ubuntu22-ci/Dockerfile
+sudo nano docker/ubuntu22-ci/Dockerfile
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+clear
+cd ~/anycast-lab/frr
+sudo rm -f docker/ubuntu22-ci/Dockerfile
+sudo nano docker/ubuntu22-ci/Dockerfile
+sudo docker system prune -a --volumes -f
+sudo docker builder prune -a -f
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+sudo docker run -it frr-arm64:local /bin/bash
+cd ~/anycast-lab/frr
+sudo docker buildx build --platform linux/arm64 -t frr-arm64:local -f docker/ubuntu22-ci/Dockerfile .
+ls
+cd ~
+ls
+sudo rm -rf anycast-lab/
+sudo rm -rf install.sh 
+clear
+ls
+sudo apt clean
+sudo apt autoremove -y
+df -h
+clear
+df -h
+# 1️⃣ Remove apt package cache
+sudo apt clean
+sudo apt autoclean
+# 2️⃣ Remove old dependencies that aren’t needed
+sudo apt autoremove -y
+# 3️⃣ Clean temporary files
+sudo rm -rf /tmp/*
+sudo rm -rf /var/tmp/*
+# 4️⃣ Remove leftover Docker images, containers, and build caches
+sudo docker system prune -a -f --volumes
+# 5️⃣ Remove any previous FRR build files if present
+sudo rm -rf ~/anycast-lab/frr
+sudo rm -rf ~/frr
+clear
+du -h ~ | sort -hr | head -20
+clear
+sudo apt update
+clear
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io
+sudo usermod -aG docker $USER
+newgrp docker
+docker --version
+clear
+docker network create --subnet=172.20.0.0/16 anycast-net
+docker network ls
+docker network inspect anycast-net
+clear
+mkdir ~/anycast-lab
+cd ~/anycast-lab
+cat > Dockerfile << 'EOF'
+FROM ubuntu:22.04
+
+# Avoid prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install BIRD and useful tools
+RUN apt-get update && \
+    apt-get install -y bird2 iputils-ping iproute2 tcpdump net-tools curl nginx && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directory for BIRD config
+RUN mkdir -p /etc/bird
+
+# Expose BGP port
+EXPOSE 179
+
+# Keep container running
+CMD ["tail", "-f", "/dev/null"]
+EOF
+
+clear
+docker build -t anycast-bird .
+clear
+docker run -d   --name anycast1   --network anycast-net   --ip 172.20.0.11   --cap-add NET_ADMIN   --privileged   anycast-bird
+# Create anycast node 2
+docker run -d   --name anycast2   --network anycast-net   --ip 172.20.0.12   --cap-add NET_ADMIN   --privileged   anycast-bird
+# Create anycast node 3
+docker run -d   --name anycast3   --network anycast-net   --ip 172.20.0.13   --cap-add NET_ADMIN   --privileged   anycast-bird
+# Create a client for testing
+docker run -d   --name client   --network anycast-net   --ip 172.20.0.100   --cap-add NET_ADMIN   anycast-bird
+clear
+docker ps
+docker exec anycast1 ip addr add 172.20.255.1/32 dev lo
+# Add anycast IP to anycast2
+docker exec anycast2 ip addr add 172.20.255.1/32 dev lo
+# Add anycast IP to anycast3
+docker exec anycast3 ip addr add 172.20.255.1/32 dev lo
+docker exec anycast1 ip addr show lo
+clear
+docker exec anycast1 bash -c 'cat > /etc/bird/bird.conf << "EOF"
+log syslog all;
+
+router id 172.20.0.11;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+EOF'
+# Start BIRD on anycast1
+docker exec anycast1 bird -c /etc/bird/bird.conf
+clear
+docker exec anycast1 mkdir -p /run/bird
+docker exec anycast2 mkdir -p /run/bird
+docker exec anycast3 mkdir -p /run/bird
+# Now start BIRD on anycast1
+docker exec anycast1 bird -c /etc/bird/bird.conf
+# Start BIRD on anycast2
+docker exec anycast2 bird -c /etc/bird/bird.conf
+# Start BIRD on anycast3
+docker exec anycast3 bird -c /etc/bird/bird.conf
+docker exec anycast1 birdc show protocols
+clear
+docker exec anycast1 birdc show protocols
+# Check BGP details
+docker exec anycast1 birdc show protocols all peer2
+# Check the routing table on anycast1
+docker exec anycast1 birdc show route
+clear
+docker exec anycast1 birdc show protocols
+# Check BGP details
+docker exec anycast1 birdc show protocols all peer2
+# Check the routing table on anycast1
+docker exec anycast1 birdc show route
+clear
+docker exec anycast2 ps aux | grep bird
+docker exec anycast3 ps aux | grep bird
+docker exec anycast2 bird -c /etc/bird/bird.conf
+docker exec anycast3 bird -c /etc/bird/bird.conf
+sleep 5
+docker exec anycast1 birdc show protocols
+docker exec anycast1 pkill bird
+docker exec anycast2 pkill bird
+docker exec anycast3 pkill bird
+sleep 2
+docker exec -d anycast1 bird -c /etc/bird/bird.conf -d
+docker exec -d anycast2 bird -c /etc/bird/bird.conf -d
+docker exec -d anycast3 bird -c /etc/bird/bird.conf -d
+sleep 5
+docker exec anycast1 birdc show protocols
+docker exec anycast1 netstat -tln | grep 179
+clear
+docker exec anycast2 netstat -tln | grep 179
+docker exec anycast3 netstat -tln | grep 179
+docker exec anycast2 netstat -tln | grep 179
+clear
+docker exec anycast2 netstat -tln | grep 179
+docker exec anycast3 netstat -tln | grep 179
+docker exec anycast1 ping -c 2 172.20.0.12
+docker exec anycast1 ping -c 2 172.20.0.13
+docker exec anycast2 birdc show protocols all peer1
+clear
+docker exec anycast2 ps aux | grep bird
+docker exec anycast3 ps aux | grep bird
+docker exec anycast2 bird -p -c /etc/bird/bird.conf
+docker exec anycast2 cat /etc/bird/bird.conf
+clear
+# Check if BIRD processes are running
+docker exec anycast2 ps aux | grep bird
+docker exec anycast3 ps aux | grep bird
+# Check BIRD configuration is valid on anycast2
+docker exec anycast2 bird -p -c /etc/bird/bird.conf
+# If there are errors, let's view the config file
+docker exec anycast2 cat /etc/bird/bird.conf
+clear
+docker exec anycast1 pkill -9 bird
+docker exec anycast2 pkill -9 bird
+docker exec anycast3 pkill -9 bird
+sleep 2
+docker exec anycast1 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.11;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+EOF'
+# Verify it was written correctly
+docker exec anycast1 cat /etc/bird/bird.conf
+clear
+docker exec anycast2 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.12;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer1 {
+  local as 65000;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+EOF'
+# Configure anycast3
+docker exec anycast3 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.13;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer1 {
+  local as 65000;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+EOF'
+# Verify anycast2 config
+docker exec anycast2 cat /etc/bird/bird.conf
+clear
+docker exec -d anycast1 bird -c /etc/bird/bird.conf -d
+docker exec -d anycast2 bird -c /etc/bird/bird.conf -d
+docker exec -d anycast3 bird -c /etc/bird/bird.conf -d
+sleep 5
+docker exec anycast1 birdc show protocols
+docker exec anycast2 netstat -tln | grep 179
+docker exec anycast3 netstat -tln | grep 179
+clear
+docker exec anycast1 birdc show route all
+docker exec anycast1 ip route show
+docker exec client ping -c 4 172.20.255.1
+docker exec client traceroute -n 172.20.255.1
+clear
+docker exec anycast1 service nginx start
+docker exec anycast2 service nginx start
+docker exec anycast3 service nginx start
+docker exec anycast1 bash -c 'echo "Response from ANYCAST NODE 1 (172.20.0.11)" > /var/www/html/index.html'
+docker exec anycast2 bash -c 'echo "Response from ANYCAST NODE 2 (172.20.0.12)" > /var/www/html/index.html'
+docker exec anycast3 bash -c 'echo "Response from ANYCAST NODE 3 (172.20.0.13)" > /var/www/html/index.html'
+docker exec client curl http://172.20.255.1
+clear
+docker exec anycast3 birdc configure soft
+docker exec anycast3 birdc disable static1
+docker exec client curl http://172.20.255.1
+docker exec anycast1 birdc show route all for 172.20.255.1
+clear
+docker exec anycast3 ip addr del 172.20.255.1/32 dev lo
+sleep 3
+docker exec client curl http://172.20.255.1
+docker exec anycast1 birdc show route for 172.20.255.1
+docker exec client ip route show
+docker exec client bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.100;
+
+protocol device {
+  scan time 10;
+}
+
+protocol kernel {
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp anycast1 {
+  local as 65001;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export none;
+  };
+}
+
+protocol bgp anycast2 {
+  local as 65001;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export none;
+  };
+}
+
+protocol bgp anycast3 {
+  local as 65001;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export none;
+  };
+}
+EOF'
+clear
+docker exec client mkdir -p /run/bird
+docker exec -d client bird -c /etc/bird/bird.conf -d
+sleep 5
+docker exec client birdc show protocols
+clear
+docker exec anycast1 bash -c 'cat >> /etc/bird/bird.conf <<EOF
+
+protocol bgp client {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Update anycast2
+docker exec anycast2 bash -c 'cat >> /etc/bird/bird.conf <<EOF
+
+protocol bgp client {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Update anycast3
+docker exec anycast3 bash -c 'cat >> /etc/bird/bird.conf <<EOF
+
+protocol bgp client {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Reconfigure BIRD on all nodes
+docker exec anycast1 birdc configure
+docker exec anycast2 birdc configure
+docker exec anycast3 birdc configure
+# Wait for BGP to establish
+sleep 5
+clear
+"client" is a reserved keyword in BIRD. Let's use a different name:
+bash# Fix anycast1
+docker exec anycast1 bash -c 'cat > /etc/bird/bird.conf <<EOFlog syslog all;
+
+router id 172.20.0.11;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp client_peer {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+
+# Fix anycast2
+docker exec anycast2 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.12;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer1 {
+  local as 65000;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp client_peer {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+
+
+exit
+clear
+
+clear
+# Fix anycast1
+docker exec anycast1 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.11;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp client_peer {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Fix anycast2
+docker exec anycast2 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.12;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer1 {
+  local as 65000;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer3 {
+  local as 65000;
+  neighbor 172.20.0.13 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp client_peer {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Fix anycast3 (remember to add back the loopback IP first!)
+docker exec anycast3 ip addr add 172.20.255.1/32 dev lo
+docker exec anycast3 bash -c 'cat > /etc/bird/bird.conf <<EOF
+log syslog all;
+
+router id 172.20.0.13;
+
+protocol device {
+  scan time 10;
+}
+
+protocol direct {
+  ipv4;
+  interface "lo";
+}
+
+protocol kernel {
+  ipv4 {
+    export all;
+  };
+}
+
+protocol static {
+  ipv4;
+  route 172.20.255.1/32 via "lo";
+}
+
+protocol bgp peer1 {
+  local as 65000;
+  neighbor 172.20.0.11 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp peer2 {
+  local as 65000;
+  neighbor 172.20.0.12 as 65000;
+  ipv4 {
+    import all;
+    export all;
+  };
+}
+
+protocol bgp client_peer {
+  local as 65000;
+  neighbor 172.20.0.100 as 65001;
+  ipv4 {
+    import none;
+    export all;
+  };
+}
+EOF'
+# Reconfigure all nodes
+docker exec anycast1 birdc configure
+docker exec anycast2 birdc configure
+docker exec anycast3 birdc configure
+# Wait for BGP
+sleep 5
+# Check client status
+docker exec client birdc show protocols
+clear
+# Check the client's routing table - it should now have the anycast route
+docker exec client ip route show
+# Check which routes the client learned
+docker exec client birdc show route
+# Now test the web service - which node responds?
+docker exec client curl http://172.20.255.1
+clear
+# Check the client's routing table - it should now have the anycast route
+docker exec client ip route show
+# Check which routes the client learned
+docker exec client birdc show route
+# Now test the web service - which node responds?
+docker exec client curl http://172.20.255.1
+clear
+docker stop anycast1
+sleep 10
+docker exec client curl http://172.20.255.1
+docker exec client birdc show route for 172.20.255.1
+clear
+docker start anycast1
+sleep 10
+docker exec client curl http://172.20.255.1
+docker exec client birdc show route for 172.20.255.1
+docker exec anycast1 service nginx stop
+docker exec client curl http://172.20.255.1
+docker exec anycast1 ip addr del 172.20.255.1/32 dev lo
+sleep 5
+docker exec client curl http://172.20.255.1
+clear
+# Check if BIRD is running on anycast1
+docker exec anycast1 ps aux | grep bird
+# Check BGP status on anycast1
+docker exec anycast1 birdc show protocols
+# Check if the loopback IP exists
+docker exec anycast1 ip addr show lo
+# Let's manually add it back and reconfigure
+docker exec anycast1 ip addr add 172.20.255.1/32 dev lo
+# Start nginx again
+docker exec anycast1 service nginx start
+# Wait for BGP to converge
+sleep 5
+# Check client's routes
+docker exec client birdc show route for 172.20.255.1
+# Test which node responds
+docker exec client curl http://172.20.255.1
+clear
+docker exec anycast1 mkdir -p /run/bird
+docker exec -d anycast1 bird -c /etc/bird/bird.conf -d
+sleep 5
+docker exec anycast1 birdc show protocols
+docker exec client birdc show route for 172.20.255.1
+docker exec client curl http://172.20.255.1
+docker exec anycast1 iptables -A INPUT -p tcp --dport 179 -j DROP
+docker exec anycast1 iptables -A OUTPUT -p tcp --sport 179 -j DROP
+clear
+docker exec anycast1 pkill -9 bird
+# Wait for BGP hold timer to expire on the client side
+sleep 10
+docker exec client birdc show protocols
+docker exec client birdc show route for 172.20.255.1
+docker exec client curl http://172.20.255.1
+clear
+docker exec client bash -c 'cat > /tmp/monitor.sh <<EOF
+#!/bin/bash
+while true; do
+  echo "\$(date +%T) - \$(curl -s http://172.20.255.1)"
+  sleep 1
+done
+EOF'
+docker exec client chmod +x /tmp/monitor.sh
+docker exec -d client bash /tmp/monitor.sh > /tmp/monitor.log 2>&1
+sleep 5
+docker exec client tail -20 /tmp/monitor.log
+clear
+docker exec -d client bash -c 'while true; do echo "$(date +%T) - $(curl -s http://172.20.255.1)" >> /tmp/monitor.log 2>&1; sleep 1; done'
+sleep 5
+docker exec client tail -10 /tmp/monitor.log
+clear
+docker exec anycast2 ip addr del 172.20.255.1/32 dev lo
+sleep 10
+docker exec client tail -30 /tmp/monitor.log
+docker exec client birdc show route for 172.20.255.1
+clear
+docker exec anycast2 birdc disable static1
+sleep 5
+docker exec client tail -20 /tmp/monitor.log
+docker exec client birdc show route for 172.20.255.1
+docker exec client curl http://172.20.255.1
+clear
+docker exec anycast2 pkill -9 bird
+sleep 10
+docker exec client tail -20 /tmp/monitor.log
+docker exec client birdc show route for 172.20.255.1
+docker exec client curl http://172.20.255.1
+clear
+l
+cd anycast-lab/
+clear
+ls
+cat > ~/demo-anycast.sh << 'SCRIPT'
+#!/bin/bash
+
+echo "========================================="
+echo "ANYCAST NETWORK DEMONSTRATION"
+echo "========================================="
+echo ""
+
+# Function to wait with progress
+wait_with_progress() {
+  local duration=$1
+  local message=$2
+  echo -n "$message"
+  for i in $(seq 1 $duration); do
+    echo -n "."
+    sleep 1
+  done
+  echo " Done!"
+}
+
+echo "Step 1: Starting containers..."
+docker start anycast1 anycast2 anycast3 client > /dev/null 2>&1
+wait_with_progress 2 "Waiting for containers"
+
+echo ""
+echo "Step 2: Starting BIRD (BGP daemon) on all nodes..."
+docker exec anycast1 mkdir -p /run/bird 2>/dev/null
+docker exec anycast2 mkdir -p /run/bird 2>/dev/null
+docker exec anycast3 mkdir -p /run/bird 2>/dev/null
+docker exec client mkdir -p /run/bird 2>/dev/null
+
+docker exec -d anycast1 bird -c /etc/bird/bird.conf -d 2>/dev/null
+docker exec -d anycast2 bird -c /etc/bird/bird.conf -d 2>/dev/null
+docker exec -d anycast3 bird -c /etc/bird/bird.conf -d 2>/dev/null
+docker exec -d client bird -c /etc/bird/bird.conf -d 2>/dev/null
+
+wait_with_progress 10 "Waiting for BGP to establish"
+
+echo ""
+echo "Step 3: Configuring anycast IPs..."
+docker exec anycast1 ip addr add 172.20.255.1/32 dev lo 2>/dev/null || true
+docker exec anycast2 ip addr add 172.20.255.1/32 dev lo 2>/dev/null || true
+docker exec anycast3 ip addr add 172.20.255.1/32 dev lo 2>/dev/null || true
+
+echo ""
+echo "Step 4: Starting web services..."
+docker exec anycast1 service nginx start 2>&1 | grep -v "already"
+docker exec anycast2 service nginx start 2>&1 | grep -v "already"
+docker exec anycast3 service nginx start 2>&1 | grep -v "already"
+
+echo ""
+echo "========================================="
+echo "NETWORK ARCHITECTURE"
+echo "========================================="
+echo "Anycast IP: 172.20.255.1 (advertised by all 3 nodes)"
+echo "Node 1: 172.20.0.11"
+echo "Node 2: 172.20.0.12"
+echo "Node 3: 172.20.0.13"
+echo "Client: 172.20.0.100"
+echo ""
+
+echo "========================================="
+echo "BGP ROUTING STATUS"
+echo "========================================="
+docker exec client birdc show protocols
+echo ""
+
+echo "All routes to anycast IP (showing redundancy):"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+echo "========================================="
+echo "CURRENT ACTIVE NODE"
+echo "========================================="
+echo "Testing which node is currently serving traffic:"
+RESPONSE=$(docker exec client curl -s http://172.20.255.1)
+echo "$RESPONSE"
+echo ""
+
+echo "========================================="
+echo "STARTING REAL-TIME MONITORING"
+echo "========================================="
+docker exec client rm -f /tmp/monitor.log 2>/dev/null
+docker exec -d client bash -c 'while true; do echo "$(date +%T) - $(curl -s http://172.20.255.1 2>/dev/null)"; sleep 1; done >> /tmp/monitor.log 2>&1'
+
+wait_with_progress 5 "Collecting baseline traffic"
+echo ""
+echo "Last 5 requests:"
+docker exec client tail -5 /tmp/monitor.log
+echo ""
+
+read -p "Press ENTER to simulate node failure and watch anycast flip..."
+
+echo ""
+echo "========================================="
+echo "SIMULATING NODE FAILURE"
+echo "========================================="
+
+# Determine active node and fail it
+ACTIVE_NODE=$(echo "$RESPONSE" | grep -oP 'NODE \K[0-9]')
+echo "Failing Node $ACTIVE_NODE (killing BGP daemon)..."
+
+if [ "$ACTIVE_NODE" == "1" ]; then
+  docker exec anycast1 pkill -9 bird
+elif [ "$ACTIVE_NODE" == "2" ]; then
+  docker exec anycast2 pkill -9 bird
+else
+  docker exec anycast3 pkill -9 bird
+fi
+
+wait_with_progress 10 "Waiting for BGP reconvergence"
+
+echo ""
+echo "========================================="
+echo "ANYCAST FLIP DETECTED!"
+echo "========================================="
+echo "Traffic flow during and after failure:"
+docker exec client tail -20 /tmp/monitor.log
+echo ""
+
+echo "New routing table (failed node removed):"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+echo "========================================="
+echo "DEMONSTRATION COMPLETE"
+echo "========================================="
+echo ""
+echo "To continue monitoring: docker exec client tail -f /tmp/monitor.log"
+echo "To check BGP status: docker exec client birdc show protocols"
+echo "To restore failed node: See restoration commands in README"
+SCRIPT
+
+chmod +x ~/demo-anycast.sh
+clear
+cd ~/anycast-lab
+~/demo-anycast.sh
+clear
+ls
+cd ..
+ls
+nano demo-anycast.sh 
+clear
+echo "Testing which node is currently serving traffic:"
+RESPONSE=$(docker exec client curl -s http://172.20.255.1)
+echo "$RESPONSE"
+clear
+great the demo script works, now actually comes the main part, i am building this project for a IETF hackathon and my problem statement is anycast flipping and cdn user experiencez
+clear
+RESPONSE=$(docker exec client curl -s http://172.20.255.1)
+echo "$RESPONSE"
+docker exec anycast2 pkill -9 bird
+docker exec client bash -c 'for i in {1..15}; do echo "$(date +%T) - $(curl -s http://172.20.255.1 2>/dev/null || echo FAILED)"; sleep 1; done'
+clear
+cat > ~/manual-failover-demo.sh << 'SCRIPT'
+#!/bin/bash
+
+echo "=== MANUAL FAILOVER DEMONSTRATION ==="
+echo ""
+
+# Show current state
+echo "Current active node:"
+CURRENT=$(docker exec client curl -s http://172.20.255.1)
+echo "$CURRENT"
+CURRENT_NODE=$(echo "$CURRENT" | grep -oP 'NODE \K[0-9]')
+echo ""
+
+# Show all routes
+echo "All available routes:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+read -p "Press ENTER to fail Node $CURRENT_NODE..."
+
+# Fail current node
+echo "Failing Node $CURRENT_NODE..."
+docker exec anycast${CURRENT_NODE} pkill -9 bird
+echo ""
+
+# Show real-time failover
+echo "Watching failover (15 seconds):"
+docker exec client bash -c 'for i in {1..15}; do echo "$(date +%T) - $(curl -s http://172.20.255.1 2>/dev/null || echo FAILED)"; sleep 1; done'
+echo ""
+
+# Show new state
+echo "New active node:"
+NEW=$(docker exec client curl -s http://172.20.255.1)
+echo "$NEW"
+NEW_NODE=$(echo "$NEW" | grep -oP 'NODE \K[0-9]')
+echo ""
+
+echo "Updated routing table:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+read -p "Press ENTER to restore Node $CURRENT_NODE and bring it back online..."
+
+# Restore failed node
+echo "Restoring Node $CURRENT_NODE..."
+docker exec anycast${CURRENT_NODE} ip addr add 172.20.255.1/32 dev lo 2>/dev/null || true
+docker exec anycast${CURRENT_NODE} mkdir -p /run/bird
+docker exec -d anycast${CURRENT_NODE} bird -c /etc/bird/bird.conf -d
+docker exec anycast${CURRENT_NODE} service nginx start 2>&1 | grep -v "already"
+echo ""
+
+echo "Waiting for BGP to establish..."
+sleep 8
+echo ""
+
+echo "BGP Status:"
+docker exec client birdc show protocols | grep anycast
+echo ""
+
+echo "All routes now available:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+echo "Testing which node serves traffic now:"
+for i in {1..5}; do
+  docker exec client curl -s http://172.20.255.1
+  sleep 1
+done
+echo ""
+
+echo "=== DEMONSTRATION COMPLETE ==="
+SCRIPT
+
+chmod +x ~/manual-failover-demo.sh
+clear
+~/manual-failover-demo.sh
+clea
+clear
+cat > ~/manual-failover-demo.sh << 'SCRIPT'
+#!/bin/bash
+
+echo "=== MANUAL FAILOVER DEMONSTRATION ==="
+echo ""
+
+# Function to check which nodes have BIRD running
+check_active_nodes() {
+  ACTIVE_NODES=""
+  for i in 1 2 3; do
+    if docker exec anycast${i} pgrep bird > /dev/null 2>&1; then
+      ACTIVE_NODES="$ACTIVE_NODES $i"
+    fi
+  done
+  echo "$ACTIVE_NODES"
+}
+
+# Function to restore a node
+restore_node() {
+  local NODE=$1
+  echo "Restoring Node $NODE..."
+  docker exec anycast${NODE} ip addr add 172.20.255.1/32 dev lo 2>/dev/null || true
+  docker exec anycast${NODE} mkdir -p /run/bird 2>/dev/null
+  docker exec -d anycast${NODE} bird -c /etc/bird/bird.conf -d 2>/dev/null
+  docker exec anycast${NODE} service nginx start 2>&1 | grep -v "already"
+}
+
+# Check current state
+echo "Checking system state..."
+ACTIVE_NODES=$(check_active_nodes)
+echo "Active nodes (with BIRD running):$ACTIVE_NODES"
+echo ""
+
+# Show current active node
+echo "Current active node:"
+CURRENT=$(docker exec client curl -s http://172.20.255.1 2>/dev/null)
+if [ -z "$CURRENT" ]; then
+  echo "ERROR: No node is responding! Need to restore at least one node."
+  echo ""
+  echo "Available restore commands:"
+  echo "  Node 1: restore_node 1"
+  echo "  Node 2: restore_node 2"
+  echo "  Node 3: restore_node 3"
+  echo ""
+  read -p "Which node to restore? (1/2/3): " RESTORE_CHOICE
+  restore_node $RESTORE_CHOICE
+  echo ""
+  echo "Waiting for BGP..."
+  sleep 8
+  CURRENT=$(docker exec client curl -s http://172.20.255.1)
+fi
+
+echo "$CURRENT"
+CURRENT_NODE=$(echo "$CURRENT" | grep -oP 'NODE \K[0-9]')
+echo ""
+
+# Show all routes
+echo "All available routes:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+read -p "Press ENTER to fail Node $CURRENT_NODE..."
+
+# Fail current node
+echo ""
+echo "Failing Node $CURRENT_NODE..."
+docker exec anycast${CURRENT_NODE} pkill -9 bird
+echo ""
+
+# Show real-time failover
+echo "Watching failover (15 seconds):"
+docker exec client bash -c 'for i in {1..15}; do RESP=$(curl -s http://172.20.255.1 2>/dev/null); if [ -z "$RESP" ]; then echo "$(date +%T) - FAILED/SWITCHING..."; else echo "$(date +%T) - $RESP"; fi; sleep 1; done'
+echo ""
+
+# Show new state
+echo "New active node:"
+NEW=$(docker exec client curl -s http://172.20.255.1 2>/dev/null)
+if [ -z "$NEW" ]; then
+  echo "ERROR: No nodes left! All nodes are down."
+  echo "Need to restore at least one node manually."
+  exit 1
+fi
+echo "$NEW"
+NEW_NODE=$(echo "$NEW" | grep -oP 'NODE \K[0-9]')
+echo ""
+
+echo "Updated routing table:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+# Check which nodes are down
+echo "Checking for failed nodes..."
+FAILED_NODES=""
+for i in 1 2 3; do
+  if ! docker exec anycast${i} pgrep bird > /dev/null 2>&1; then
+    FAILED_NODES="$FAILED_NODES $i"
+  fi
+done
+
+if [ -z "$FAILED_NODES" ]; then
+  echo "All nodes are running. Demonstration complete!"
+  exit 0
+fi
+
+echo "Failed nodes:$FAILED_NODES"
+echo ""
+
+read -p "Press ENTER to restore failed node(s) and bring them back online..."
+
+# Restore all failed nodes
+for NODE in $FAILED_NODES; do
+  echo ""
+  restore_node $NODE
+done
+
+echo ""
+echo "Waiting for BGP to establish..."
+sleep 10
+echo ""
+
+echo "BGP Status:"
+docker exec client birdc show protocols | grep anycast
+echo ""
+
+echo "All routes now available:"
+docker exec client birdc show route for 172.20.255.1
+echo ""
+
+echo "Testing traffic distribution (may stay on current node or switch based on routing):"
+for i in {1..8}; do
+  docker exec client curl -s http://172.20.255.1
+  sleep 1
+done
+echo ""
+
+echo "Final system state:"
+ACTIVE_NODES=$(check_active_nodes)
+echo "Active nodes:$ACTIVE_NODES"
+echo ""
+
+echo "=== DEMONSTRATION COMPLETE ==="
+echo ""
+echo "Quick commands for manual testing:"
+echo "  - Fail a node: docker exec anycastX pkill -9 bird"
+echo "  - Check status: docker exec client curl -s http://172.20.255.1"
+echo "  - View routes: docker exec client birdc show route for 172.20.255.1"
+SCRIPT
+
+chmod +x ~/manual-failover-demo.sh
+clear
+~/manual-failover-demo.sh
+ls
+~/demo-anycast.sh 
+~/manual-failover-demo.sh 
+docker exec client birdc show route for 172.20.255.1
+clear
