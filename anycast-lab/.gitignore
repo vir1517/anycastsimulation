@@ -1,0 +1,13 @@
+# Docker volumes
+*.log
+.DS_Store
+
+# Temporary files
+*.tmp
+*~
+
+# Results directory
+results/
+
+# Node modules if we add any
+node_modules/
